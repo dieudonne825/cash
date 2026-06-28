@@ -1,0 +1,6 @@
+{
+  "name": "Cash SMS",
+  "description": "Secure SMS synchronization with Django server",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
