@@ -950,11 +950,34 @@ fun SendTabRedesigned(
     isSending: Boolean,
     onSend: () -> Unit
 ) {
+    val context = LocalContext.current
+    var contactsList by remember { mutableStateOf<List<ContactInfo>>(emptyList()) }
+    var contactSearchQuery by remember { mutableStateOf("") }
+    
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            contactsList = ContactResolver.fetchAllContacts(context)
+        }
+    }
+
+    // Filter contacts based on either the input text or a search query
+    val filteredContacts = remember(contactsList, phone, contactSearchQuery) {
+        val query = if (contactSearchQuery.isNotBlank()) contactSearchQuery else phone
+        if (query.isBlank()) {
+            contactsList
+        } else {
+            contactsList.filter {
+                it.displayName.contains(query, ignoreCase = true) ||
+                it.phoneNumber.contains(query, ignoreCase = true)
+            }
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(20.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -1013,6 +1036,7 @@ fun SendTabRedesigned(
             }
         }
 
+        // Form Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(24.dp),
@@ -1027,7 +1051,10 @@ fun SendTabRedesigned(
             ) {
                 OutlinedTextField(
                     value = phone,
-                    onValueChange = onPhoneChange,
+                    onValueChange = {
+                        onPhoneChange(it)
+                        if (contactSearchQuery.isNotBlank()) contactSearchQuery = ""
+                    },
                     label = { Text("Numéro de téléphone") },
                     placeholder = { Text("+33 6 12 34 56 78") },
                     singleLine = true,
@@ -1056,14 +1083,92 @@ fun SendTabRedesigned(
                     )
                 )
 
+                // Inline match suggestion (if typing match)
+                val activeSuggestions = remember(phone, contactsList) {
+                    if (phone.isNotBlank() && phone.length >= 2) {
+                        contactsList.filter {
+                            (it.displayName.contains(phone, ignoreCase = true) ||
+                             it.phoneNumber.contains(phone, ignoreCase = true)) &&
+                            it.phoneNumber != phone
+                        }.take(3)
+                    } else {
+                        emptyList()
+                    }
+                }
+
+                AnimatedVisibility(visible = activeSuggestions.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                RoundedCornerShape(12.dp)
+                            )
+                            .padding(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "Suggestions de contacts",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                        activeSuggestions.forEach { contact ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable {
+                                        onPhoneChange(contact.phoneNumber)
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .clip(CircleShape)
+                                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = contact.displayName.take(1).uppercase(),
+                                            color = MaterialTheme.colorScheme.primary,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    Text(
+                                        text = contact.displayName,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                                Text(
+                                    text = contact.phoneNumber,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+
                 OutlinedTextField(
                     value = body,
                     onValueChange = onBodyChange,
                     label = { Text("Votre message") },
                     placeholder = { Text("Tapez votre message ici...") },
                     modifier = Modifier.fillMaxWidth(),
-                    minLines = 5,
-                    maxLines = 8,
+                    minLines = 4,
+                    maxLines = 6,
                     leadingIcon = {
                         Surface(
                             shape = CircleShape,
@@ -1113,6 +1218,180 @@ fun SendTabRedesigned(
                         Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(20.dp))
                         Spacer(modifier = Modifier.width(12.dp))
                         Text("Envoyer le SMS", fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+        }
+
+        // Contact Directory Card
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Contacts,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = "Contacts de l'appareil",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    Text(
+                        text = "${contactsList.size} au total",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier
+                            .background(
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+                                RoundedCornerShape(12.dp)
+                            )
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+
+                // Search Bar for Contacts
+                OutlinedTextField(
+                    value = contactSearchQuery,
+                    onValueChange = { contactSearchQuery = it },
+                    placeholder = { Text("Rechercher un contact...") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                        )
+                    },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
+                    )
+                )
+
+                if (filteredContacts.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SearchOff,
+                                contentDescription = null,
+                                modifier = Modifier.size(48.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                            )
+                            Text(
+                                text = if (contactsList.isEmpty()) "Aucun contact trouvé" else "Aucun résultat pour \"$contactSearchQuery\"",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                            )
+                        }
+                    }
+                } else {
+                    androidx.compose.foundation.lazy.LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(filteredContacts) { contact ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(
+                                        if (phone == contact.phoneNumber) 
+                                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f) 
+                                        else 
+                                            Color.Transparent
+                                    )
+                                    .clickable {
+                                        onPhoneChange(contact.phoneNumber)
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // Avatar with beautiful initials
+                                Box(
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            Brush.linearGradient(
+                                                colors = listOf(
+                                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                                                    MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f)
+                                                )
+                                            )
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = contact.displayName.take(1).uppercase(),
+                                        color = MaterialTheme.colorScheme.primary,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.ExtraBold
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.width(12.dp))
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = contact.displayName,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = contact.phoneNumber,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+
+                                if (phone == contact.phoneNumber) {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = "Sélectionné",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }

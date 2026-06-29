@@ -54,6 +54,45 @@ object ContactResolver {
 
         return null
     }
+
+    fun fetchAllContacts(context: Context): List<ContactInfo> {
+        if (
+            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return emptyList()
+        }
+
+        val contacts = mutableListOf<ContactInfo>()
+        val uri = ContactsContract.CommonDataKinds.Phone.CONTENT_URI
+        val projection = arrayOf(
+            ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+            ContactsContract.CommonDataKinds.Phone.NUMBER
+        )
+
+        try {
+            context.contentResolver.query(
+                uri, 
+                projection, 
+                null, 
+                null, 
+                "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} ASC"
+            )?.use { cursor ->
+                val nameIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                val numberIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                
+                while (cursor.moveToNext()) {
+                    val displayName = cursor.getStringOrNull(nameIndex)?.takeIf { it.isNotBlank() } ?: "Inconnu"
+                    val phoneNumber = cursor.getStringOrNull(numberIndex)?.takeIf { it.isNotBlank() } ?: continue
+                    contacts.add(ContactInfo(displayName = displayName, phoneNumber = phoneNumber))
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        return contacts.distinctBy { it.phoneNumber.replace(" ", "").replace("-", "").trim() }
+    }
 }
 
 private fun <K, V> Iterable<K>.associateWithNotNull(valueTransform: (K) -> V?): Map<K, V> {
