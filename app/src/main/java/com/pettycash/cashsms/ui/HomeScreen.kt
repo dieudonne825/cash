@@ -19,6 +19,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
@@ -324,7 +326,9 @@ fun HomeScreen(
                         DjangoSyncWorker.enqueueNow(context)
                         isSending = false
                         scope.launch { showMessage("SMS envoyé à $addr") }
-                    }
+                    },
+                    onOpenConversation = onOpenConversation,
+                    latestMessages = latest
                 )
                 2 -> SettingsTabRedesigned(
                     backendType = backendType,
@@ -948,11 +952,14 @@ fun SendTabRedesigned(
     body: String,
     onBodyChange: (String) -> Unit,
     isSending: Boolean,
-    onSend: () -> Unit
+    onSend: () -> Unit,
+    onOpenConversation: (String, Long?) -> Unit,
+    latestMessages: List<SmsMessageWithSync>
 ) {
     val context = LocalContext.current
     var contactsList by remember { mutableStateOf<List<ContactInfo>>(emptyList()) }
     var contactSearchQuery by remember { mutableStateOf("") }
+    val focusRequester = remember { FocusRequester() }
     
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
@@ -973,10 +980,30 @@ fun SendTabRedesigned(
         }
     }
 
+    // Sort and Group contacts alphabetically A-Z
+    val groupedContacts = remember(filteredContacts) {
+        filteredContacts
+            .sortedBy { it.displayName.lowercase() }
+            .groupBy { it.displayName.firstOrNull()?.uppercaseChar() ?: '#' }
+    }
+
+    // Extract recent contact entries from existing threads
+    val recentAddresses = remember(latestMessages) {
+        latestMessages.mapNotNull { it.message.address?.trim()?.takeIf(String::isNotBlank) }
+            .distinct()
+            .take(5)
+    }
+
+    val recentContacts = remember(recentAddresses, contactsList) {
+        recentAddresses.map { addr ->
+            contactsList.find { it.phoneNumber == addr } ?: ContactInfo(displayName = addr, phoneNumber = addr)
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(20.dp),
+            .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Card(
@@ -1026,7 +1053,7 @@ fun SendTabRedesigned(
                                 color = Color.White
                             )
                             Text(
-                                "Envoyez un SMS rapidement",
+                                "Envoyez un SMS ou démarrez un chat",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = Color.White.copy(alpha = 0.8f)
                             )
@@ -1121,6 +1148,7 @@ fun SendTabRedesigned(
                                     .clip(RoundedCornerShape(8.dp))
                                     .clickable {
                                         onPhoneChange(contact.phoneNumber)
+                                        focusRequester.requestFocus()
                                     }
                                     .padding(horizontal = 8.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -1166,7 +1194,9 @@ fun SendTabRedesigned(
                     onValueChange = onBodyChange,
                     label = { Text("Votre message") },
                     placeholder = { Text("Tapez votre message ici...") },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester),
                     minLines = 4,
                     maxLines = 6,
                     leadingIcon = {
@@ -1276,6 +1306,92 @@ fun SendTabRedesigned(
                     )
                 }
 
+                // Recent Chats row
+                if (recentContacts.isNotEmpty() && contactSearchQuery.isBlank()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Récents",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        androidx.compose.foundation.lazy.LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            contentPadding = PaddingValues(vertical = 4.dp)
+                        ) {
+                            items(recentContacts) { contact ->
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier
+                                        .width(64.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable {
+                                            onPhoneChange(contact.phoneNumber)
+                                            focusRequester.requestFocus()
+                                        }
+                                        .padding(vertical = 4.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(44.dp)
+                                            .clip(CircleShape)
+                                            .background(
+                                                Brush.linearGradient(
+                                                    colors = listOf(
+                                                        MaterialTheme.colorScheme.primaryContainer,
+                                                        MaterialTheme.colorScheme.tertiaryContainer
+                                                    )
+                                                )
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = contact.displayName.take(1).uppercase(),
+                                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        // Quick chat thread shortcut overlay
+                                        Box(
+                                            modifier = Modifier
+                                                .size(16.dp)
+                                                .align(Alignment.BottomEnd)
+                                                .clip(CircleShape)
+                                                .background(MaterialTheme.colorScheme.primary)
+                                                .clickable {
+                                                    onOpenConversation(contact.phoneNumber, null)
+                                                },
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Chat,
+                                                contentDescription = "Ouvrir",
+                                                tint = MaterialTheme.colorScheme.onPrimary,
+                                                modifier = Modifier.size(10.dp)
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = contact.displayName,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        fontWeight = FontWeight.Medium,
+                                        textAlign = TextAlign.Center,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+                        }
+                        Divider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f),
+                            thickness = 1.dp,
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
+                    }
+                }
+
                 // Search Bar for Contacts
                 OutlinedTextField(
                     value = contactSearchQuery,
@@ -1326,69 +1442,129 @@ fun SendTabRedesigned(
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(filteredContacts) { contact ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(
-                                        if (phone == contact.phoneNumber) 
-                                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f) 
-                                        else 
-                                            Color.Transparent
-                                    )
-                                    .clickable {
-                                        onPhoneChange(contact.phoneNumber)
-                                    }
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                // Avatar with beautiful initials
+                        groupedContacts.forEach { (char, contactsForChar) ->
+                            item {
                                 Box(
                                     modifier = Modifier
-                                        .size(40.dp)
-                                        .clip(CircleShape)
+                                        .fillMaxWidth()
                                         .background(
-                                            Brush.linearGradient(
-                                                colors = listOf(
-                                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
-                                                    MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f)
-                                                )
-                                            )
-                                        ),
-                                    contentAlignment = Alignment.Center
+                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                            RoundedCornerShape(6.dp)
+                                        )
+                                        .padding(horizontal = 12.dp, vertical = 4.dp)
                                 ) {
                                     Text(
-                                        text = contact.displayName.take(1).uppercase(),
-                                        color = MaterialTheme.colorScheme.primary,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.ExtraBold
+                                        text = char.toString(),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = MaterialTheme.colorScheme.primary
                                     )
                                 }
+                            }
+                            items(contactsForChar) { contact ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .background(
+                                            if (phone == contact.phoneNumber) 
+                                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f) 
+                                            else 
+                                                Color.Transparent
+                                        )
+                                        .clickable {
+                                            onPhoneChange(contact.phoneNumber)
+                                            focusRequester.requestFocus()
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    // Avatar with beautiful initials and dynamic distinct colors
+                                    val avatarColor = remember(contact.displayName) {
+                                        val colors = listOf(
+                                            Color(0xFFE57373), Color(0xFFF06292), Color(0xFFBA68C8),
+                                            Color(0xFF9575CD), Color(0xFF7986CB), Color(0xFF64B5F6),
+                                            Color(0xFF4FC3F7), Color(0xFF4DB6AC), Color(0xFF81C784),
+                                            Color(0xFFD4E157), Color(0xFFFFD54F), Color(0xFFFFB74D)
+                                        )
+                                        val index = Math.abs(contact.displayName.hashCode()) % colors.size
+                                        colors[index]
+                                    }
 
-                                Spacer(modifier = Modifier.width(12.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .clip(CircleShape)
+                                            .background(avatarColor.copy(alpha = 0.15f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = contact.displayName.take(1).uppercase(),
+                                            color = avatarColor,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
 
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = contact.displayName,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    Text(
-                                        text = contact.phoneNumber,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
+                                    Spacer(modifier = Modifier.width(12.dp))
 
-                                if (phone == contact.phoneNumber) {
-                                    Icon(
-                                        imageVector = Icons.Default.CheckCircle,
-                                        contentDescription = "Sélectionné",
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(24.dp)
-                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = contact.displayName,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = contact.phoneNumber,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        // Quick Native Actions: Instant Navigation to Chat Conversation
+                                        IconButton(
+                                            onClick = {
+                                                onOpenConversation(contact.phoneNumber, null)
+                                            },
+                                            modifier = Modifier.size(36.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Chat,
+                                                contentDescription = "Ouvrir la discussion",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+
+                                        if (phone == contact.phoneNumber) {
+                                            Icon(
+                                                imageVector = Icons.Default.CheckCircle,
+                                                contentDescription = "Sélectionné",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(22.dp)
+                                            )
+                                        } else {
+                                            IconButton(
+                                                onClick = {
+                                                    onPhoneChange(contact.phoneNumber)
+                                                    focusRequester.requestFocus()
+                                                },
+                                                modifier = Modifier.size(36.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Create,
+                                                    contentDescription = "Remplir",
+                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
