@@ -343,7 +343,7 @@ fun HomeScreen(
                     latestMessages = latest
                 )
                 2 -> ClientsTabRedesigned(
-                    messages = filteredMessages,
+                    messages = latest,
                     baseUrl = baseUrl,
                     token = token,
                     backendType = backendType
@@ -485,6 +485,38 @@ fun MessagesTabRedesigned(
     onRefresh: () -> Unit,
     onOpenConversation: (String, Long?) -> Unit
 ) {
+    var filterOperator by remember { mutableStateOf("Tous") }
+    var filterSyncStatus by remember { mutableStateOf("Tous") }
+
+    fun getMessageOperator(body: String, address: String): String {
+        val text = (body + " " + address).uppercase()
+        return when {
+            text.contains("MTN") || text.contains("MOMO") -> "MTN"
+            text.contains("ORANGE") || text.contains("OM") -> "Orange"
+            text.contains("WAVE") -> "Wave"
+            text.contains("MOOV") -> "Moov"
+            else -> "Autre"
+        }
+    }
+
+    val filteredList = remember(messages, filterOperator, filterSyncStatus) {
+        messages.filter { item ->
+            val matchesOperator = when (filterOperator) {
+                "Tous" -> true
+                else -> getMessageOperator(item.message.body, item.message.address.orEmpty()) == filterOperator
+            }
+            
+            val matchesStatus = when (filterSyncStatus) {
+                "Tous" -> true
+                "En attente" -> !item.syncState.equals("SYNCED", ignoreCase = true) && !item.syncState.equals("OK", ignoreCase = true)
+                "Synchronisés" -> item.syncState.equals("SYNCED", ignoreCase = true) || item.syncState.equals("OK", ignoreCase = true)
+                else -> true
+            }
+            
+            matchesOperator && matchesStatus
+        }
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
@@ -522,6 +554,49 @@ fun MessagesTabRedesigned(
                 )
                 Spacer(modifier = Modifier.height(16.dp))
                 FinancialDashboardCard(messages = messages)
+                Spacer(modifier = Modifier.height(12.dp))
+                
+                Text(
+                    "Filtrer par Opérateur",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                androidx.compose.foundation.lazy.LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                ) {
+                    val operators = listOf("Tous", "MTN", "Orange", "Wave", "Moov")
+                    items(operators) { op ->
+                        SegmentedChip(
+                            selected = filterOperator == op,
+                            label = op,
+                            onClick = { filterOperator = op }
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    "Filtrer par Statut",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                androidx.compose.foundation.lazy.LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                ) {
+                    val statuses = listOf("Tous", "En attente", "Synchronisés")
+                    items(statuses) { status ->
+                        SegmentedChip(
+                            selected = filterSyncStatus == status,
+                            label = status,
+                            onClick = { filterSyncStatus = status }
+                        )
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(16.dp))
                 Row(
                     modifier = Modifier
@@ -559,7 +634,7 @@ fun MessagesTabRedesigned(
                             color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
                         ) {
                             Text(
-                                "${messages.size}",
+                                "${filteredList.size}",
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -569,7 +644,7 @@ fun MessagesTabRedesigned(
                     }
                 }
             }
-            items(messages, key = { it.message.id }) { message ->
+            items(filteredList, key = { it.message.id }) { message ->
                 val address = message.message.address.orEmpty()
                 ConversationCardRedesigned(
                     message = message,
@@ -1848,6 +1923,14 @@ fun SettingsTabRedesigned(
     expandedSection: String?,
     onToggleSection: (String) -> Unit
 ) {
+    val context = LocalContext.current
+    var isSecEnabled by remember { mutableStateOf(SyncPrefs.isSecurityEnabled(context)) }
+    var secType by remember { mutableStateOf(SyncPrefs.getSecurityType(context)) }
+    var savedPinValue by remember { mutableStateOf(SyncPrefs.getSavedPin(context)) }
+    
+    var showPinDialog by remember { mutableStateOf(false) }
+    var pinInputValue by remember { mutableStateOf("") }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(20.dp),
@@ -1908,6 +1991,116 @@ fun SettingsTabRedesigned(
         }
 
         item {
+            ExpandableCard(
+                title = "Sécurité & Accès",
+                icon = Icons.Default.Lock,
+                isExpanded = expandedSection == "security",
+                onToggle = { onToggleSection("security") }
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Verrouiller l'application", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                            Text("Sécuriser l'accès à Cash à l'ouverture", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(
+                            checked = isSecEnabled,
+                            onCheckedChange = { enabled ->
+                                isSecEnabled = enabled
+                                SyncPrefs.setSecurityEnabled(context, enabled)
+                            }
+                        )
+                    }
+
+                    if (isSecEnabled) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Méthode de verrouillage", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                            
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        secType = "PIN"
+                                        SyncPrefs.setSecurityType(context, "PIN")
+                                    }
+                                    .padding(vertical = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = secType == "PIN",
+                                    onClick = {
+                                        secType = "PIN"
+                                        SyncPrefs.setSecurityType(context, "PIN")
+                                    }
+                                )
+                                Column {
+                                    Text("Code PIN uniquement", style = MaterialTheme.typography.bodyLarge)
+                                    Text("Demander le code PIN de 4 chiffres", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        secType = "BIOMETRIC"
+                                        SyncPrefs.setSecurityType(context, "BIOMETRIC")
+                                    }
+                                    .padding(vertical = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = secType == "BIOMETRIC",
+                                    onClick = {
+                                        secType = "BIOMETRIC"
+                                        SyncPrefs.setSecurityType(context, "BIOMETRIC")
+                                    }
+                                )
+                                Column {
+                                    Text("Empreinte digitale + Code PIN", style = MaterialTheme.typography.bodyLarge)
+                                    Text("Empreinte biométrique par défaut, code PIN en secours", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text("Code PIN d'accès", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                                Text("Code actuel : ****", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Button(
+                                onClick = {
+                                    pinInputValue = ""
+                                    showPinDialog = true
+                                },
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Text("Modifier le PIN", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
             Card(
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surface
@@ -1951,6 +2144,53 @@ fun SettingsTabRedesigned(
                 }
             }
         }
+    }
+
+    if (showPinDialog) {
+        AlertDialog(
+            onDismissRequest = { showPinDialog = false },
+            title = { Text("Modifier le code PIN") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Saisissez un nouveau code PIN à 4 chiffres :")
+                    OutlinedTextField(
+                        value = pinInputValue,
+                        onValueChange = { input ->
+                            if (input.length <= 4 && input.all { it.isDigit() }) {
+                                pinInputValue = input
+                            }
+                        },
+                        label = { Text("Nouveau PIN") },
+                        placeholder = { Text("Saisissez 4 chiffres") },
+                        singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                        ),
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (pinInputValue.length == 4) {
+                            savedPinValue = pinInputValue
+                            SyncPrefs.setSavedPin(context, pinInputValue)
+                            showPinDialog = false
+                        }
+                    },
+                    enabled = pinInputValue.length == 4
+                ) {
+                    Text("Enregistrer")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPinDialog = false }) {
+                    Text("Annuler")
+                }
+            }
+        )
     }
 }
 
@@ -2365,11 +2605,18 @@ fun ClientsTabRedesigned(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    fun showMessage(msg: String) {
+        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+    }
 
     var backendClients by remember { mutableStateOf<List<BackendClient>>(emptyList()) }
     var isSyncingClients by remember { mutableStateOf(false) }
     var syncError by remember { mutableStateOf<String?>(null) }
-    var activeSubTab by remember { mutableStateOf(0) } // 0 = Rapprochements, 1 = Clients Liés, 2 = Base de Données
+    var activeSubTab by remember { mutableStateOf(0) } // 0 = Rapprochements SMS, 1 = Base de Données
+
+    var clientSearchQuery by remember { mutableStateOf("") }
+    var clientOperatorFilter by remember { mutableStateOf("Tous") }
+    var clientStatusFilter by remember { mutableStateOf("Tous") } // "Tous", "À associer", "Liés"
 
     // Local state for manual mapping (SMS phone number -> Backend Client ID)
     var manualMappings by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
@@ -2387,6 +2634,14 @@ fun ClientsTabRedesigned(
     var newClientEmail by remember { mutableStateOf("") }
     var newClientService by remember { mutableStateOf("MTNMOMO") }
     var newClientBalance by remember { mutableStateOf("0") }
+
+    // Custom filtering rules states
+    var customRules by remember { mutableStateOf(com.pettycash.cashsms.sync.SyncPrefs.getCustomRules(context)) }
+    var showAddRuleDialog by remember { mutableStateOf(false) }
+    var ruleSenderContains by remember { mutableStateOf("") }
+    var ruleBodyContains by remember { mutableStateOf("") }
+    var ruleTransactionType by remember { mutableStateOf("IN") } // "IN" or "OUT"
+    var ruleOperatorName by remember { mutableStateOf("Orange Money") }
 
     val displayClients = backendClients
 
@@ -2428,14 +2683,15 @@ fun ClientsTabRedesigned(
         }
     }
 
-    // Extract SmsDepositors
-    val smsDepositors = remember(messages) {
+    // Extract SmsDepositors using customRules
+    val smsDepositors = remember(messages, customRules) {
         val transactions = messages.mapNotNull { msgWithSync ->
             val msg = msgWithSync.message
             FinancialTracker.parseTransaction(
                 body = msg.body.orEmpty(),
                 address = msg.address.orEmpty(),
-                date = msg.date ?: 0L
+                date = msg.date ?: 0L,
+                customRules = customRules
             )
         }.filter { it.type == "IN" }
 
@@ -2505,6 +2761,54 @@ fun ClientsTabRedesigned(
     val unlinkedDepositors = smsDepositors.filter { !isMatched(it) }
     val linkedDepositors = smsDepositors.filter { isMatched(it) }
 
+    val filteredSmsDepositors = remember(smsDepositors, clientSearchQuery, clientOperatorFilter, clientStatusFilter, manualMappings) {
+        smsDepositors.filter { dep ->
+            val matchesSearch = clientSearchQuery.isBlank() || 
+                dep.displayName.contains(clientSearchQuery, ignoreCase = true) || 
+                dep.phoneNumber.contains(clientSearchQuery, ignoreCase = true)
+
+            val opText = (dep.displayName + " " + dep.phoneNumber).uppercase()
+            val matchesOperator = when (clientOperatorFilter) {
+                "Tous" -> true
+                "MTN" -> opText.contains("MTN") || opText.contains("MOMO")
+                "Orange" -> opText.contains("ORANGE") || opText.contains("OM")
+                "Wave" -> opText.contains("WAVE")
+                "Moov" -> opText.contains("MOOV")
+                else -> true
+            }
+
+            val matched = isMatched(dep)
+            val matchesStatus = when (clientStatusFilter) {
+                "Tous" -> true
+                "À associer" -> !matched
+                "Liés" -> matched
+                else -> true
+            }
+
+            matchesSearch && matchesOperator && matchesStatus
+        }
+    }
+
+    val filteredBackendClients = remember(backendClients, clientSearchQuery, clientOperatorFilter) {
+        backendClients.filter { client ->
+            val matchesSearch = clientSearchQuery.isBlank() || 
+                client.name.contains(clientSearchQuery, ignoreCase = true) || 
+                client.phone.contains(clientSearchQuery, ignoreCase = true)
+
+            val srv = client.service.orEmpty().uppercase()
+            val matchesOperator = when (clientOperatorFilter) {
+                "Tous" -> true
+                "MTN" -> srv.contains("MTN") || srv.contains("MOMO")
+                "Orange" -> srv.contains("ORANGE") || srv.contains("OM")
+                "Wave" -> srv.contains("WAVE")
+                "Moov" -> srv.contains("MOOV")
+                else -> true
+            }
+
+            matchesSearch && matchesOperator
+        }
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -2559,7 +2863,7 @@ fun ClientsTabRedesigned(
                                     color = Color.White
                                 )
                                 Text(
-                                    "Rapprochement automatique via Intelligence Artificielle",
+                                    "Liaison intelligente & Synchronisation Client / Serveur",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = Color.White.copy(alpha = 0.8f)
                                 )
@@ -2602,7 +2906,7 @@ fun ClientsTabRedesigned(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.4f))
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
-                        Text("Rapprochés", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
+                        Text("Liés", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
                         Text("${linkedDepositors.size}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     }
                 }
@@ -2631,26 +2935,98 @@ fun ClientsTabRedesigned(
 
         // Tabs row
         item {
-            TabRow(
+            val pendingSyncMessages = remember(messages) {
+                messages.filter { it.syncState.equals("PENDING", ignoreCase = true) || it.syncState.equals("FAILED", ignoreCase = true) }
+            }
+            ScrollableTabRow(
                 selectedTabIndex = activeSubTab,
                 containerColor = Color.Transparent,
+                edgePadding = 0.dp,
                 divider = {}
             ) {
                 Tab(
                     selected = activeSubTab == 0,
                     onClick = { activeSubTab = 0 },
-                    text = { Text("À Lier (${unlinkedDepositors.size})", fontWeight = FontWeight.Bold) }
+                    text = { Text("Clients / Serveur (${smsDepositors.size})", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium) }
                 )
                 Tab(
                     selected = activeSubTab == 1,
                     onClick = { activeSubTab = 1 },
-                    text = { Text("Liés (${linkedDepositors.size})", fontWeight = FontWeight.Bold) }
+                    text = { Text("Base de Données (${displayClients.size})", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium) }
                 )
                 Tab(
                     selected = activeSubTab == 2,
                     onClick = { activeSubTab = 2 },
-                    text = { Text("Base (${displayClients.size})", fontWeight = FontWeight.Bold) }
+                    text = { Text("Historique & Audit (${linkedDepositors.size})", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium) }
                 )
+                Tab(
+                    selected = activeSubTab == 3,
+                    onClick = { activeSubTab = 3 },
+                    text = { Text("Filtres Custom (${customRules.size})", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium) }
+                )
+                Tab(
+                    selected = activeSubTab == 4,
+                    onClick = { activeSubTab = 4 },
+                    text = { Text("File de Synchro (${pendingSyncMessages.size})", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium) }
+                )
+            }
+        }
+
+        // Search bar & Filter row
+        if (activeSubTab == 0 || activeSubTab == 1) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = clientSearchQuery,
+                        onValueChange = { clientSearchQuery = it },
+                        placeholder = { Text("Rechercher par nom ou téléphone...") },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                        trailingIcon = {
+                            if (clientSearchQuery.isNotEmpty()) {
+                                IconButton(onClick = { clientSearchQuery = "" }) {
+                                    Icon(Icons.Default.Close, contentDescription = null)
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        singleLine = true
+                    )
+
+                    // Operator Row
+                    Text("Opérateur", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp))
+                    androidx.compose.foundation.lazy.LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        val operators = listOf("Tous", "MTN", "Orange", "Wave", "Moov")
+                        items(operators) { op ->
+                            SegmentedChip(
+                                selected = clientOperatorFilter == op,
+                                label = op,
+                                onClick = { clientOperatorFilter = op }
+                            )
+                        }
+                    }
+
+                    // Status Row (only for subtab 0)
+                    if (activeSubTab == 0) {
+                        Text("Statut", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp))
+                        androidx.compose.foundation.lazy.LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            val statuses = listOf("Tous", "À associer", "Liés")
+                            items(statuses) { status ->
+                                SegmentedChip(
+                                    selected = clientStatusFilter == status,
+                                    label = status,
+                                    onClick = { clientStatusFilter = status }
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -2680,125 +3056,193 @@ fun ClientsTabRedesigned(
                     }
                 }
                 
-                if (unlinkedDepositors.isEmpty()) {
+                if (filteredSmsDepositors.isEmpty()) {
                     item {
                         Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
-                            Text("Aucun dépôt non rapproché trouvé.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Aucun client ou SMS correspondant trouvé.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 } else {
-                    items(unlinkedDepositors) { dep ->
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                        ) {
-                            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.size(40.dp)) {
-                                            Box(contentAlignment = Alignment.Center) {
-                                                Text(
-                                                    text = dep.displayName.take(1).uppercase(),
-                                                    color = MaterialTheme.colorScheme.onErrorContainer,
-                                                    style = MaterialTheme.typography.titleMedium,
-                                                    fontWeight = FontWeight.Bold
-                                                )
+                    items(filteredSmsDepositors) { dep ->
+                        val matched = isMatched(dep)
+                        
+                        if (matched) {
+                            val matchedClient = getMatchedClient(dep)
+                            val mainDisplayName = matchedClient?.name ?: dep.displayName
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                border = androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.tertiary.copy(alpha = 0.5f))
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.tertiaryContainer, modifier = Modifier.size(40.dp)) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Text(
+                                                        text = mainDisplayName.take(1).uppercase(),
+                                                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                                        style = MaterialTheme.typography.titleMedium,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                }
+                                            }
+                                            Column {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Text(mainDisplayName, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
+                                                    ServiceBadge(service = matchedClient?.service)
+                                                }
+                                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                    Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.tertiary)
+                                                    Text("SMS: ${dep.displayName} (${dep.phoneNumber})", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                                                }
                                             }
                                         }
-                                        Column {
-                                            Text(dep.displayName, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
-                                            Text(dep.phoneNumber, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                                        Column(horizontalAlignment = Alignment.End) {
+                                            Text(
+                                                FinancialTracker.formatFCFA(dep.totalDeposits),
+                                                style = MaterialTheme.typography.bodyLarge,
+                                                fontWeight = FontWeight.Black,
+                                                color = MaterialTheme.colorScheme.tertiary
+                                            )
+                                            Text("${dep.transactionCount} dépôts", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                     }
                                     
-                                    Column(horizontalAlignment = Alignment.End) {
-                                        Text(
-                                            FinancialTracker.formatFCFA(dep.totalDeposits),
-                                            style = MaterialTheme.typography.bodyLarge,
-                                            fontWeight = FontWeight.Black,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                        Text("${dep.transactionCount} dépôts", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    if (manualMappings.containsKey(dep.phoneNumber)) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                manualMappings = manualMappings - dep.phoneNumber
+                                            },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(12.dp),
+                                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                                        ) {
+                                            Icon(Icons.Default.LinkOff, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Délier / Dissocier", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
+                                        }
                                     }
                                 }
-
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Button(
-                                        onClick = {
-                                            selectedDepositorForAi = dep
-                                            isAnalyzingAi = true
-                                            aiResult = null
-                                            scope.launch {
-                                                val res = askGeminiForMatch(dep, displayClients)
-                                                aiResult = res
-                                                isAnalyzingAi = false
-                                            }
-                                        },
-                                        modifier = Modifier.weight(1f),
-                                        shape = RoundedCornerShape(12.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            }
+                        } else {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(14.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("Analyse IA", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
-                                    }
-
-                                    Button(
-                                        onClick = {
-                                            depositorToCreateClientFor = dep
-                                            newClientName = dep.displayName
-                                            newClientPhone = dep.phoneNumber
-                                            newClientEmail = ""
-                                            newClientService = when {
-                                                dep.displayName.uppercase().contains("MTN") || dep.phoneNumber.contains("97") || dep.phoneNumber.contains("96") || dep.phoneNumber.contains("61") || dep.phoneNumber.contains("62") -> "MTNMOMO"
-                                                dep.displayName.uppercase().contains("ORANGE") || dep.phoneNumber.contains("95") || dep.phoneNumber.contains("94") || dep.phoneNumber.contains("07") || dep.phoneNumber.contains("08") -> "ORANGE"
-                                                dep.displayName.uppercase().contains("WAVE") || dep.phoneNumber.contains("wave") -> "WAVE"
-                                                dep.displayName.uppercase().contains("MOOV") -> "MOOV"
-                                                else -> "MTNMOMO"
+                                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f), modifier = Modifier.size(40.dp)) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Text(
+                                                        text = dep.displayName.take(1).uppercase(),
+                                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                                        style = MaterialTheme.typography.titleMedium,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                }
                                             }
-                                            newClientBalance = dep.totalDeposits.toInt().toString()
-                                            showCreateClientDialog = true
-                                        },
-                                        modifier = Modifier.weight(1.2f),
-                                        shape = RoundedCornerShape(12.dp),
-                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-                                    ) {
-                                        Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(14.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("Créer Client", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
-                                    }
-
-                                    // Manual match popup/selector
-                                    var showManualSelect by remember { mutableStateOf(false) }
-                                    Box(modifier = Modifier.weight(1.1f)) {
-                                        OutlinedButton(
-                                            onClick = { showManualSelect = true },
-                                            shape = RoundedCornerShape(12.dp),
-                                            contentPadding = PaddingValues(horizontal = 4.dp)
-                                        ) {
-                                            Text("Lier", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
+                                            Column {
+                                                Text(dep.displayName, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
+                                                Text(dep.phoneNumber, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            }
                                         }
-                                        DropdownMenu(
-                                            expanded = showManualSelect,
-                                            onDismissRequest = { showManualSelect = false }
+                                        
+                                        Column(horizontalAlignment = Alignment.End) {
+                                            Text(
+                                                FinancialTracker.formatFCFA(dep.totalDeposits),
+                                                style = MaterialTheme.typography.bodyLarge,
+                                                fontWeight = FontWeight.Black,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                            Text("${dep.transactionCount} dépôts", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Button(
+                                            onClick = {
+                                                selectedDepositorForAi = dep
+                                                isAnalyzingAi = true
+                                                aiResult = null
+                                                scope.launch {
+                                                    val res = askGeminiForMatch(dep, displayClients)
+                                                    aiResult = res
+                                                    isAnalyzingAi = false
+                                                }
+                                            },
+                                            modifier = Modifier.weight(1f),
+                                            shape = RoundedCornerShape(12.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                                         ) {
-                                            displayClients.forEach { c ->
-                                                DropdownMenuItem(
-                                                    text = { Text("${c.name} (${c.phone})") },
-                                                    onClick = {
-                                                        manualMappings = manualMappings + (dep.phoneNumber to c.id)
-                                                        showManualSelect = false
-                                                    }
-                                                )
+                                            Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Analyse IA", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
+                                        }
+
+                                        Button(
+                                            onClick = {
+                                                depositorToCreateClientFor = dep
+                                                newClientName = dep.displayName
+                                                newClientPhone = dep.phoneNumber
+                                                newClientEmail = ""
+                                                newClientService = when {
+                                                    dep.displayName.uppercase().contains("MTN") || dep.phoneNumber.contains("97") || dep.phoneNumber.contains("96") || dep.phoneNumber.contains("61") || dep.phoneNumber.contains("62") -> "MTNMOMO"
+                                                    dep.displayName.uppercase().contains("ORANGE") || dep.phoneNumber.contains("95") || dep.phoneNumber.contains("94") || dep.phoneNumber.contains("07") || dep.phoneNumber.contains("08") -> "ORANGE"
+                                                    dep.displayName.uppercase().contains("WAVE") || dep.phoneNumber.contains("wave") -> "WAVE"
+                                                    dep.displayName.uppercase().contains("MOOV") -> "MOOV"
+                                                    else -> "MTNMOMO"
+                                                }
+                                                newClientBalance = dep.totalDeposits.toInt().toString()
+                                                showCreateClientDialog = true
+                                            },
+                                            modifier = Modifier.weight(1.2f),
+                                            shape = RoundedCornerShape(12.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                                        ) {
+                                            Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(14.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Créer Client", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
+                                        }
+
+                                        var showManualSelect by remember { mutableStateOf(false) }
+                                        Box(modifier = Modifier.weight(1.1f)) {
+                                            OutlinedButton(
+                                                onClick = { showManualSelect = true },
+                                                shape = RoundedCornerShape(12.dp),
+                                                contentPadding = PaddingValues(horizontal = 4.dp)
+                                            ) {
+                                                Text("Lier", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
+                                            }
+                                            DropdownMenu(
+                                                expanded = showManualSelect,
+                                                onDismissRequest = { showManualSelect = false }
+                                            ) {
+                                                displayClients.forEach { c ->
+                                                    DropdownMenuItem(
+                                                        text = { Text("${c.name} (${c.phone})") },
+                                                        onClick = {
+                                                            manualMappings = manualMappings + (dep.phoneNumber to c.id)
+                                                            showManualSelect = false
+                                                        }
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -2809,64 +3253,6 @@ fun ClientsTabRedesigned(
                 }
             }
             1 -> {
-                if (linkedDepositors.isEmpty()) {
-                    item {
-                        Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
-                            Text("Aucun rapprochement validé.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                } else {
-                    items(linkedDepositors) { dep ->
-                        val matchedClient = getMatchedClient(dep)
-                        val mainDisplayName = matchedClient?.name ?: dep.displayName
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(16.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Surface(shape = CircleShape, color = MaterialTheme.colorScheme.tertiaryContainer, modifier = Modifier.size(40.dp)) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            Text(
-                                                text = mainDisplayName.take(1).uppercase(),
-                                                color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                                style = MaterialTheme.typography.titleMedium,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                        }
-                                    }
-                                    Column {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Text(mainDisplayName, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
-                                            ServiceBadge(service = matchedClient?.service)
-                                        }
-                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                            Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.tertiary)
-                                            Text("SMS: ${dep.displayName} (${dep.phoneNumber})", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
-                                        }
-                                    }
-                                }
-
-                                Column(horizontalAlignment = Alignment.End) {
-                                    Text(
-                                        FinancialTracker.formatFCFA(dep.totalDeposits),
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        fontWeight = FontWeight.Black,
-                                        color = MaterialTheme.colorScheme.tertiary
-                                    )
-                                    Text("${dep.transactionCount} dépôts", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            2 -> {
                 if (displayClients.isEmpty()) {
                     item {
                         Card(
@@ -2893,12 +3279,11 @@ fun ClientsTabRedesigned(
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    "Veuillez configurer votre serveur dans l'onglet Paramètres pour synchroniser vos clients réels et leurs services de paiement.",
+                                    "Veuillez configurer votre serveur dans l'onglet Paramètres pour synchroniser vos clients réels.",
                                     style = MaterialTheme.typography.bodyMedium,
                                     textAlign = TextAlign.Center,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                                
                                 Button(
                                     onClick = { syncClients() },
                                     shape = RoundedCornerShape(12.dp)
@@ -2910,8 +3295,14 @@ fun ClientsTabRedesigned(
                             }
                         }
                     }
+                } else if (filteredBackendClients.isEmpty()) {
+                    item {
+                        Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                            Text("Aucun client correspondant trouvé.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
                 } else {
-                    items(displayClients) { client ->
+                    items(filteredBackendClients) { client ->
                         val initials = client.name.take(2).uppercase()
                         Card(
                             modifier = Modifier.fillMaxWidth(),
@@ -2945,6 +3336,303 @@ fun ClientsTabRedesigned(
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
                                     Text("Solde Base", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            2 -> {
+                if (linkedDepositors.isEmpty()) {
+                    item {
+                        Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                            Text("Aucun historique d'association trouvé.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                } else {
+                    items(linkedDepositors) { dep ->
+                        val matchedClient = getMatchedClient(dep)
+                        val isManual = manualMappings.containsKey(dep.phoneNumber)
+                        val mainDisplayName = matchedClient?.name ?: dep.displayName
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = if (isManual) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.tertiaryContainer,
+                                            modifier = Modifier.size(40.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    if (isManual) Icons.Default.Person else Icons.Default.AutoAwesome,
+                                                    contentDescription = null,
+                                                    tint = if (isManual) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onTertiaryContainer,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                            }
+                                        }
+                                        Column {
+                                            Text(mainDisplayName, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                Text(
+                                                    if (isManual) "Liaison Manuelle (Validée)" else "Liaison Automatique",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = if (isManual) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                            }
+                                        }
+                                    }
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(
+                                            FinancialTracker.formatFCFA(dep.totalDeposits),
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text("${dep.transactionCount} dépôts", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                                    }
+                                }
+                                Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text("Source SMS: ${dep.displayName}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                                        Text("Tél: ${dep.phoneNumber}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    if (isManual) {
+                                        OutlinedButton(
+                                            onClick = { manualMappings = manualMappings - dep.phoneNumber },
+                                            shape = RoundedCornerShape(8.dp),
+                                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                                        ) {
+                                            Text("Dissocier", style = MaterialTheme.typography.labelSmall)
+                                        }
+                                    } else {
+                                        Text("Rapproché via No.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            3 -> {
+                item {
+                    Button(
+                        onClick = {
+                            ruleSenderContains = ""
+                            ruleBodyContains = ""
+                            ruleTransactionType = "IN"
+                            ruleOperatorName = "Orange Money"
+                            showAddRuleDialog = true
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Créer une Règle Customisée", fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                if (customRules.isEmpty()) {
+                    item {
+                        Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                            Text("Aucune règle de filtrage personnalisée.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                } else {
+                    items(customRules) { rule ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = if (rule.transactionType == "IN") MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.errorContainer
+                                        ) {
+                                            Text(
+                                                text = if (rule.transactionType == "IN") "DÉPÔT (IN)" else "RETRAIT (OUT)",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (rule.transactionType == "IN") MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onErrorContainer,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                            )
+                                        }
+                                        Text(rule.operatorName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            val updated = customRules.filter { it.id != rule.id }
+                                            customRules = updated
+                                            com.pettycash.cashsms.sync.SyncPrefs.saveCustomRules(context, updated)
+                                            showMessage("Règle supprimée")
+                                        }
+                                    ) {
+                                        Icon(Icons.Default.Delete, contentDescription = "Supprimer la règle", tint = MaterialTheme.colorScheme.error)
+                                    }
+                                }
+                                
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    if (rule.senderContains.isNotBlank()) {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Text("Expéditeur contient :", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                                            Text("'${rule.senderContains}'", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                    if (rule.bodyContains.isNotBlank()) {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Text("Message contient :", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                                            Text("'${rule.bodyContains}'", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            4 -> {
+                val pendingSyncMessages = messages.filter { it.syncState.equals("PENDING", ignoreCase = true) || it.syncState.equals("FAILED", ignoreCase = true) }
+                val df = java.text.SimpleDateFormat("dd/MM HH:mm", java.util.Locale.getDefault())
+
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f))
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text("File d'Attente Hors-Ligne", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                    Text(
+                                        "${pendingSyncMessages.size} message(s) en attente",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Button(
+                                    onClick = {
+                                        com.pettycash.cashsms.sync.DjangoSyncWorker.enqueueNow(context, isManual = true)
+                                        showMessage("Force de synchronisation demandée !")
+                                    },
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Synchroniser", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Text(
+                                "Le système envoie automatiquement ces messages vers votre serveur web dès qu'une connexion Internet stable est détectée.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                if (pendingSyncMessages.isEmpty()) {
+                    item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(24.dp).fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(48.dp))
+                                Text("File d'attente vide", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                Text("Tous les SMS locaux ont été parfaitement synchronisés avec votre backend.", style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.outline)
+                            }
+                        }
+                    }
+                } else {
+                    items(pendingSyncMessages) { msg ->
+                        val isFailed = msg.syncState.equals("FAILED", ignoreCase = true)
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                if (isFailed) MaterialTheme.colorScheme.error.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant
+                            )
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text(msg.message.address.orEmpty(), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
+                                        Text(
+                                            df.format(java.util.Date(msg.message.date ?: 0L)),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.outline
+                                        )
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (isFailed) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                                    ) {
+                                        Text(
+                                            text = if (isFailed) "ÉCHEC (RETRY)" else "EN ATTENTE",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isFailed) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                }
+                                Text(
+                                    msg.message.body.orEmpty(),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                )
+                                if (isFailed) {
+                                    Text(
+                                        "Raison de l'échec : Connexion instable ou serveur injoignable.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
                                 }
                             }
                         }
@@ -3187,5 +3875,130 @@ fun ClientsTabRedesigned(
                 }
             }
         }
+    }
+
+    if (showAddRuleDialog) {
+        AlertDialog(
+            onDismissRequest = { showAddRuleDialog = false },
+            title = { Text("Nouvelle Règle de Filtrage", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Text(
+                        "Configurez des mots-clés locaux pour classer automatiquement les messages provenant de passerelles spécifiques.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = ruleSenderContains,
+                        onValueChange = { ruleSenderContains = it },
+                        label = { Text("Expéditeur (ex: Money, MTN, Orange)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = ruleBodyContains,
+                        onValueChange = { ruleBodyContains = it },
+                        label = { Text("Mots-clés dans le texte (ex: Reçu, crédité)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    
+                    // Transaction Type Selection
+                    Column {
+                        Text("Type de Transaction", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.padding(top = 8.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { ruleTransactionType = "IN" }) {
+                                RadioButton(selected = ruleTransactionType == "IN", onClick = { ruleTransactionType = "IN" })
+                                Text("Dépôt / Entrée (IN)", style = MaterialTheme.typography.bodyMedium)
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { ruleTransactionType = "OUT" }) {
+                                RadioButton(selected = ruleTransactionType == "OUT", onClick = { ruleTransactionType = "OUT" })
+                                Text("Retrait / Sortie (OUT)", style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                    }
+
+                    // Operator Selection
+                    Column {
+                        Text("Opérateur Associé", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                        val operators = listOf("Orange Money", "MTN MoMo", "Wave", "Moov", "Airtel Money", "Autre")
+                        var expandedOpDropdown by remember { mutableStateOf(false) }
+                        Box(modifier = Modifier.padding(top = 4.dp)) {
+                            OutlinedButton(
+                                onClick = { expandedOpDropdown = true },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(ruleOperatorName)
+                                Spacer(modifier = Modifier.weight(1f))
+                                Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                            }
+                            DropdownMenu(
+                                expanded = expandedOpDropdown,
+                                onDismissRequest = { expandedOpDropdown = false }
+                            ) {
+                                operators.forEach { op ->
+                                    DropdownMenuItem(
+                                        text = { Text(op) },
+                                        onClick = {
+                                            ruleOperatorName = op
+                                            expandedOpDropdown = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (ruleSenderContains.isBlank() && ruleBodyContains.isBlank()) {
+                            return@Button
+                        }
+                        val newRule = com.pettycash.cashsms.sync.CustomFilterRule(
+                            id = java.util.UUID.randomUUID().toString(),
+                            senderContains = ruleSenderContains.trim(),
+                            bodyContains = ruleBodyContains.trim(),
+                            transactionType = ruleTransactionType,
+                            operatorName = ruleOperatorName
+                        )
+                        val updated = customRules + newRule
+                        customRules = updated
+                        com.pettycash.cashsms.sync.SyncPrefs.saveCustomRules(context, updated)
+                        showAddRuleDialog = false
+                        showMessage("Règle ajoutée avec succès !")
+                    }
+                ) {
+                    Text("Créer la règle")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddRuleDialog = false }) {
+                    Text("Annuler")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun SegmentedChip(
+    selected: Boolean,
+    label: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        contentColor = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.clickable(onClick = onClick)
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+        )
     }
 }

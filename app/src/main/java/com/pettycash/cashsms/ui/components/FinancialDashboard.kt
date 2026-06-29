@@ -26,6 +26,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pettycash.cashsms.data.SmsMessageWithSync
+import com.pettycash.cashsms.sync.SyncPrefs
+import com.pettycash.cashsms.sync.CustomFilterRule
 import java.text.NumberFormat
 import java.util.Locale
 
@@ -44,10 +46,50 @@ data class FinancialTransaction(
 )
 
 object FinancialTracker {
-    fun parseTransaction(body: String, address: String, date: Long): FinancialTransaction? {
+    fun parseTransaction(
+        body: String,
+        address: String,
+        date: Long,
+        customRules: List<CustomFilterRule> = emptyList()
+    ): FinancialTransaction? {
         val cleanBody = body.replace("\n", " ").replace("\r", " ")
         val normalizedBody = cleanBody.lowercase()
         val addrLower = address.lowercase()
+
+        // 0. Match custom filtering rules first
+        for (rule in customRules) {
+            val matchesSender = rule.senderContains.isBlank() || address.contains(rule.senderContains, ignoreCase = true)
+            val matchesBody = rule.bodyContains.isBlank() || body.contains(rule.bodyContains, ignoreCase = true)
+            if (matchesSender && matchesBody) {
+                val amountRegex = """([0-9\s.,]{2,12})\s*(?:fcfa|f\s*cfa|xof|xaf|f\b)""".toRegex(RegexOption.IGNORE_CASE)
+                val match = amountRegex.find(body)
+                val amount = if (match != null) {
+                    parseAmountString(match.groupValues[1])
+                } else {
+                    val anyNumberRegex = """\b([0-9\s.,]{3,10})\b""".toRegex()
+                    val allNumbers = anyNumberRegex.findAll(body)
+                    var found: Double? = null
+                    for (m in allNumbers) {
+                        val parsed = parseAmountString(m.groupValues[1])
+                        if (parsed != null && parsed >= 100.0) {
+                            found = parsed
+                            break
+                        }
+                    }
+                    found
+                } ?: 0.0
+
+                return FinancialTransaction(
+                    amount = amount,
+                    type = rule.transactionType,
+                    category = if (rule.transactionType == "IN") "Dépôt" else "Retrait",
+                    operator = rule.operatorName,
+                    originalMessage = body,
+                    date = date,
+                    balance = null
+                )
+            }
+        }
         
         // Determine Operator
         val operator = when {
@@ -195,14 +237,18 @@ fun FinancialDashboardCard(
     messages: List<SmsMessageWithSync>,
     modifier: Modifier = Modifier
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val customRules = remember(messages) { SyncPrefs.getCustomRules(context) }
+
     // Local processing of transactions
-    val transactions = remember(messages) {
+    val transactions = remember(messages, customRules) {
         messages.mapNotNull { msgWithSync ->
             val msg = msgWithSync.message
             FinancialTracker.parseTransaction(
                 body = msg.body.orEmpty(),
                 address = msg.address.orEmpty(),
-                date = msg.date ?: 0L
+                date = msg.date ?: 0L,
+                customRules = customRules
             )
         }
     }
