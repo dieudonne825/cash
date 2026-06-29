@@ -95,34 +95,13 @@ fun TargetsList(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Surface(
-                                shape = RoundedCornerShape(4.dp),
-                                color = if (target.backendType == "LARAVEL")
-                                    MaterialTheme.colorScheme.secondaryContainer
-                                else
-                                    MaterialTheme.colorScheme.tertiaryContainer,
+                            Text(
+                                if (isActive) "Actif • Synchronisé" else "Serveur enregistré",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                                fontWeight = FontWeight.Medium,
                                 modifier = Modifier.padding(top = 2.dp)
-                            ) {
-                                Text(
-                                    target.backendType,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (target.backendType == "LARAVEL")
-                                        MaterialTheme.colorScheme.onSecondaryContainer
-                                    else
-                                        MaterialTheme.colorScheme.onTertiaryContainer,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                            if (isActive) {
-                                Text(
-                                    "Actif • Synchronisé",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.Medium,
-                                    modifier = Modifier.padding(top = 2.dp)
-                                )
-                            }
+                            )
                         }
                     }
                     if (isActive) {

@@ -29,19 +29,31 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { /* l'état de l'UI réagit via les variables observables */ }
 
+    private val requestDefaultSmsLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        isDefaultSmsApp = DefaultSmsRole.isDefaultSmsApp(this)
+    }
+
     private var conversationAddress by mutableStateOf<String?>(null)
     private var conversationMessageId by mutableStateOf<Long?>(null)
+    private var isDefaultSmsApp by mutableStateOf(false)
+
+    override fun onResume() {
+        super.onResume()
+        isDefaultSmsApp = DefaultSmsRole.isDefaultSmsApp(this)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
+        isDefaultSmsApp = DefaultSmsRole.isDefaultSmsApp(this)
         DjangoSyncWorker.ensurePeriodic(this)
         handleIntent(intent)
 
         setContent {
             val context = LocalContext.current
-            val isDefaultSmsApp = remember { mutableStateOf(DefaultSmsRole.isDefaultSmsApp(context)) }
             var isSyncing by remember { mutableStateOf(false) }
             var syncStatus by remember { mutableStateOf("") }
 
@@ -79,10 +91,13 @@ class MainActivity : ComponentActivity() {
                         )
                     } else {
                         HomeScreen(
-                            isDefaultSmsApp = isDefaultSmsApp.value,
+                            isDefaultSmsApp = isDefaultSmsApp,
                             onRequestDefaultRole = {
-                                DefaultSmsRole.requestDefaultSmsRole(this@MainActivity) {
-                                    isDefaultSmsApp.value = DefaultSmsRole.isDefaultSmsApp(this@MainActivity)
+                                val intent = DefaultSmsRole.getDefaultSmsIntent(this@MainActivity)
+                                if (intent != null) {
+                                    requestDefaultSmsLauncher.launch(intent)
+                                } else {
+                                    isDefaultSmsApp = true
                                 }
                             },
                             onImportHistory = {

@@ -5,6 +5,8 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -43,6 +45,15 @@ import com.pettycash.cashsms.sms.SmsSender
 import com.pettycash.cashsms.sync.DjangoAuthClient
 import com.pettycash.cashsms.sync.DjangoSyncWorker
 import com.pettycash.cashsms.sync.SyncPrefs
+import com.pettycash.cashsms.sync.LaravelClient
+import com.pettycash.cashsms.sync.DjangoClient
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
+import org.json.JSONArray
+import androidx.compose.ui.window.Dialog
+import androidx.compose.foundation.lazy.LazyRow
+import kotlinx.coroutines.delay
 import com.pettycash.cashsms.ui.components.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
@@ -191,7 +202,7 @@ fun HomeScreen(
                 FloatingActionButton(
                     onClick = {
                         DjangoSyncWorker.enqueueNow(context)
-                        scope.launch { showMessage("Synchronisation lancée vers Django") }
+                        scope.launch { showMessage("Synchronisation lancée !") }
                     },
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary,
@@ -214,6 +225,7 @@ fun HomeScreen(
                 val tabs = listOf(
                     Triple("Messages", Icons.Outlined.Chat, Icons.Filled.Chat),
                     Triple("Envoyer", Icons.Outlined.Send, Icons.Filled.Send),
+                    Triple("Clients", Icons.Outlined.People, Icons.Filled.People),
                     Triple("Paramètres", Icons.Outlined.Settings, Icons.Filled.Settings)
                 )
                 tabs.forEachIndexed { index, (label, iconOutlined, iconFilled) ->
@@ -330,7 +342,13 @@ fun HomeScreen(
                     onOpenConversation = onOpenConversation,
                     latestMessages = latest
                 )
-                2 -> SettingsTabRedesigned(
+                2 -> ClientsTabRedesigned(
+                    messages = filteredMessages,
+                    baseUrl = baseUrl,
+                    token = token,
+                    backendType = backendType
+                )
+                3 -> SettingsTabRedesigned(
                     backendType = backendType,
                     onBackendTypeChange = {
                         backendType = it
@@ -366,38 +384,46 @@ fun HomeScreen(
                         val u = loginUsername.trim()
                         val p = loginPassword
                         if (base.isEmpty() || u.isEmpty() || p.isEmpty()) {
-                            loginStatus = if (backendType == "LARAVEL") "Base URL / email / mot de passe requis" else "Base URL / username / password requis"
+                            loginStatus = "Veuillez remplir tous les champs"
                         } else {
                             loginStatus = "Connexion..."
                             isLoggingIn = true
                             scope.launch(Dispatchers.IO) {
                                 try {
-                                    val res = if (backendType == "LARAVEL") {
+                                    // Try Django first
+                                    var res = com.pettycash.cashsms.sync.DjangoAuthClient.login(base, u, p)
+                                    var detectedType = "DJANGO"
+                                    
+                                    // If Django fails, try Laravel
+                                    if (res.token == null) {
                                         val laravelRes = com.pettycash.cashsms.sync.LaravelAuthClient.login(base, u, p)
-                                        com.pettycash.cashsms.sync.DjangoAuthClient.LoginResult(
-                                            token = laravelRes.token,
-                                            errorMessage = laravelRes.errorMessage,
-                                            errorDetails = laravelRes.errorDetails,
-                                            errorUrl = laravelRes.errorUrl,
-                                            httpCode = laravelRes.httpCode
-                                        )
-                                    } else {
-                                        com.pettycash.cashsms.sync.DjangoAuthClient.login(base, u, p)
+                                        if (laravelRes.token != null) {
+                                            res = com.pettycash.cashsms.sync.DjangoAuthClient.LoginResult(
+                                                token = laravelRes.token,
+                                                errorMessage = laravelRes.errorMessage,
+                                                errorDetails = laravelRes.errorDetails,
+                                                errorUrl = laravelRes.errorUrl,
+                                                httpCode = laravelRes.httpCode
+                                            )
+                                            detectedType = "LARAVEL"
+                                        }
                                     }
+                                    
                                     if (res.token != null) {
+                                        backendType = detectedType
                                         token = res.token
                                         loginStatus = "✅ Connecté"
                                         SyncPrefs.setBaseUrl(context, base)
                                         SyncPrefs.setToken(context, res.token)
-                                        SyncPrefs.setBackendType(context, backendType)
+                                        SyncPrefs.setBackendType(context, detectedType)
                                         SyncPrefs.setActiveBaseUrl(context, base)
-                                        val target = app.db.syncDao().ensureTarget(base, res.token, backendType)
+                                        val target = app.db.syncDao().ensureTarget(base, res.token, detectedType)
                                         activeTargetId = target.id
                                         targets = app.db.syncDao().listTargets()
                                         DjangoSyncWorker.ensurePeriodic(context)
                                     } else {
-                                        loginStatus = "Échec: ${res.errorMessage}"
-                                        errorDetails = res.errorDetails
+                                        loginStatus = "Échec de connexion"
+                                        errorDetails = res.errorMessage
                                     }
                                 } catch (e: Exception) {
                                     loginStatus = "Erreur: ${e.message}"
@@ -412,13 +438,15 @@ fun HomeScreen(
                         if (base.endsWith("/admin")) base = base.removeSuffix("/admin")
                         SyncPrefs.setBaseUrl(context, base)
                         SyncPrefs.setToken(context, token)
-                        SyncPrefs.setBackendType(context, backendType)
                         scope.launch {
-                            val target = app.db.syncDao().ensureTarget(base, token.trim(), backendType)
+                            val detectedType = autoDetectBackendType(base, token.trim())
+                            backendType = detectedType
+                            SyncPrefs.setBackendType(context, detectedType)
+                            val target = app.db.syncDao().ensureTarget(base, token.trim(), detectedType)
                             activeTargetId = target.id
                             targets = app.db.syncDao().listTargets()
                             DjangoSyncWorker.ensurePeriodic(context)
-                            showMessage("Token sauvegardé")
+                            showMessage("Token sauvegardé et configuré")
                         }
                     },
                     onSyncNow = { DjangoSyncWorker.enqueueNow(context) },
@@ -960,6 +988,7 @@ fun SendTabRedesigned(
     var contactsList by remember { mutableStateOf<List<ContactInfo>>(emptyList()) }
     var contactSearchQuery by remember { mutableStateOf("") }
     val focusRequester = remember { FocusRequester() }
+    var showContactPickerSheet by remember { mutableStateOf(false) }
     
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
@@ -1100,6 +1129,15 @@ fun SendTabRedesigned(
                                     tint = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
                             }
+                        }
+                    },
+                    trailingIcon = {
+                        IconButton(onClick = { showContactPickerSheet = true }) {
+                            Icon(
+                                imageVector = Icons.Default.Contacts,
+                                contentDescription = "Choisir depuis les contacts",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
                         }
                     },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
@@ -1572,6 +1610,208 @@ fun SendTabRedesigned(
                 }
             }
         }
+
+        if (showContactPickerSheet) {
+            var dialogSearchQuery by remember { mutableStateOf("") }
+            val dialogFilteredContacts = remember(contactsList, dialogSearchQuery) {
+                if (dialogSearchQuery.isBlank()) {
+                    contactsList
+                } else {
+                    contactsList.filter {
+                        it.displayName.contains(dialogSearchQuery, ignoreCase = true) ||
+                        it.phoneNumber.contains(dialogSearchQuery, ignoreCase = true)
+                    }
+                }
+            }
+            val dialogGroupedContacts = remember(dialogFilteredContacts) {
+                dialogFilteredContacts
+                    .sortedBy { it.displayName.lowercase() }
+                    .groupBy { it.displayName.firstOrNull()?.uppercaseChar() ?: '#' }
+            }
+
+            Dialog(onDismissRequest = { showContactPickerSheet = false }) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .fillMaxHeight(0.85f),
+                    shape = RoundedCornerShape(28.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 12.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        // Header
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(
+                                    "Contacts du téléphone",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    "${contactsList.size} contacts enregistrés",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            IconButton(onClick = { showContactPickerSheet = false }) {
+                                Icon(Icons.Default.Close, contentDescription = "Fermer")
+                            }
+                        }
+
+                        // Search Input
+                        OutlinedTextField(
+                            value = dialogSearchQuery,
+                            onValueChange = { dialogSearchQuery = it },
+                            placeholder = { Text("Rechercher un contact...") },
+                            modifier = Modifier.fillMaxWidth(),
+                            leadingIcon = {
+                                Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            },
+                            trailingIcon = {
+                                if (dialogSearchQuery.isNotBlank()) {
+                                    IconButton(onClick = { dialogSearchQuery = "" }) {
+                                        Icon(Icons.Default.Clear, contentDescription = "Effacer")
+                                    }
+                                }
+                            },
+                            singleLine = true,
+                            shape = RoundedCornerShape(16.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                            )
+                        )
+
+                        // Contacts List
+                        if (dialogGroupedContacts.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    "Aucun contact trouvé",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                dialogGroupedContacts.forEach { (letter, contactsInGroup) ->
+                                    item {
+                                        Text(
+                                            text = letter.toString(),
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.padding(top = 12.dp, bottom = 4.dp, start = 8.dp)
+                                        )
+                                    }
+                                    items(contactsInGroup) { contact ->
+                                        val initials = contact.displayName.take(2).uppercase()
+                                        val avatarBgColor = remember(contact.displayName) {
+                                            val colors = listOf(
+                                                Color(0xFF2196F3), Color(0xFFE91E63), Color(0xFF4CAF50),
+                                                Color(0xFFFF9800), Color(0xFF9C27B0), Color(0xFF00BCD4),
+                                                Color(0xFF3F51B5), Color(0xFF009688)
+                                            )
+                                            val idx = contact.displayName.hashCode().coerceAtLeast(0) % colors.size
+                                            colors[idx]
+                                        }
+
+                                        Card(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    onPhoneChange(contact.phoneNumber)
+                                                    showContactPickerSheet = false
+                                                    focusRequester.requestFocus()
+                                                },
+                                            shape = RoundedCornerShape(16.dp),
+                                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f))
+                                        ) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(12.dp),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Row(
+                                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    modifier = Modifier.weight(1f)
+                                                ) {
+                                                    Surface(
+                                                        shape = CircleShape,
+                                                        color = avatarBgColor.copy(alpha = 0.15f),
+                                                        modifier = Modifier.size(40.dp)
+                                                    ) {
+                                                        Box(contentAlignment = Alignment.Center) {
+                                                            Text(
+                                                                text = initials,
+                                                                color = avatarBgColor,
+                                                                style = MaterialTheme.typography.titleSmall,
+                                                                fontWeight = FontWeight.Bold
+                                                            )
+                                                        }
+                                                    }
+                                                    Column {
+                                                        Text(
+                                                            text = contact.displayName,
+                                                            style = MaterialTheme.typography.bodyLarge,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = MaterialTheme.colorScheme.onSurface
+                                                        )
+                                                        Text(
+                                                            text = contact.phoneNumber,
+                                                            style = MaterialTheme.typography.bodyMedium,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                }
+
+                                                IconButton(
+                                                    onClick = {
+                                                        onPhoneChange(contact.phoneNumber)
+                                                        showContactPickerSheet = false
+                                                        onOpenConversation(contact.phoneNumber, null)
+                                                    },
+                                                    modifier = Modifier.background(MaterialTheme.colorScheme.primaryContainer, CircleShape)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Chat,
+                                                        contentDescription = "Discuter",
+                                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                        modifier = Modifier.size(20.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1703,7 +1943,7 @@ fun SettingsTabRedesigned(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            "v1.0 • Synchronisation sécurisée avec Django",
+                            "v1.0 • Synchronisation sécurisée",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1837,6 +2077,1113 @@ fun StatusCardRedesigned(
                     Icon(Icons.Default.BugReport, contentDescription = null)
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Générer des SMS de test", fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+    }
+}
+
+// CLIENTS TAB MODELS & COMPOSABLES
+// ═══════════════════════════════════════════════════════════════
+
+data class BackendClient(
+    val id: Long,
+    val name: String,
+    val phone: String,
+    val email: String,
+    val balance: Double,
+    val service: String? = null
+)
+
+data class SmsDepositor(
+    val phoneNumber: String,
+    val displayName: String,
+    val totalDeposits: Double,
+    val lastDepositDate: Long,
+    val transactionCount: Int
+)
+
+data class GeminiMatchResult(
+    val matchedClientId: Long?,
+    val confidence: Int,
+    val reason: String
+)
+
+fun extractDepositorFromSms(body: String): Pair<String, String>? {
+    val clean = body.replace("\n", " ").replace("\r", " ")
+    
+    // Pattern 1: de NAME (+PHONE)
+    val pat1 = """de\s+([A-Z\s.-]{3,30})\s*\(([^)]+)\)""".toRegex(RegexOption.IGNORE_CASE)
+    val m1 = pat1.find(clean)
+    if (m1 != null) {
+        val name = m1.groupValues[1].trim()
+        val phone = m1.groupValues[2].trim()
+        if (name.length > 2 && phone.length > 5) {
+            return Pair(phone, name)
+        }
+    }
+    
+    // Pattern 2: de +PHONE (e.g., Transfert recu de 20 000 FCFA de +22997123456)
+    val pat2 = """de\s+(\+?[0-9\s]{6,20})""".toRegex()
+    val m2 = pat2.find(clean)
+    if (m2 != null) {
+        val phone = m2.groupValues[1].replace(" ", "").trim()
+        if (phone.length >= 7) {
+            return Pair(phone, phone)
+        }
+    }
+    
+    // Pattern 3: via l'agent AGENT_NAME
+    val pat3 = """via\s+l'agent\s+([A-Z0-9\s.-]{3,30})""".toRegex(RegexOption.IGNORE_CASE)
+    val m3 = pat3.find(clean)
+    if (m3 != null) {
+        val agent = m3.groupValues[1].trim()
+        if (agent.length > 2) {
+            return Pair(agent, agent)
+        }
+    }
+    
+    return null
+}
+
+suspend fun autoDetectBackendType(baseUrl: String, token: String): String {
+    return withContext(Dispatchers.IO) {
+        // Try Django first
+        val djangoUrl = baseUrl.trimEnd('/') + "/api/v1/home/clients/"
+        try {
+            val resp = com.pettycash.cashsms.sync.DjangoClient.getJson(djangoUrl, token)
+            resp.use {
+                if (it.isSuccessful) {
+                    return@withContext "DJANGO"
+                }
+            }
+        } catch (_: Exception) {}
+
+        // Try Laravel next
+        val laravelUrl = baseUrl.trimEnd('/') + "/api/clients"
+        try {
+            val resp = com.pettycash.cashsms.sync.LaravelClient.getJson(laravelUrl, token)
+            resp.use {
+                if (it.isSuccessful) {
+                    return@withContext "LARAVEL"
+                }
+            }
+        } catch (_: Exception) {}
+
+        "DJANGO"
+    }
+}
+
+suspend fun fetchClientsFromBackend(baseUrl: String, token: String, backendType: String): List<BackendClient> {
+    return withContext(Dispatchers.IO) {
+        val cleanUrl = baseUrl.trimEnd('/')
+        val url = if (backendType == "LARAVEL") {
+            "$cleanUrl/api/clients"
+        } else {
+            "$cleanUrl/api/v1/home/clients/"
+        }
+        
+        try {
+            val response = if (backendType == "LARAVEL") {
+                LaravelClient.getJson(url, token)
+            } else {
+                DjangoClient.getJson(url, token)
+            }
+            
+            response.use { resp ->
+                if (resp.isSuccessful) {
+                    val bodyStr = resp.body?.string() ?: "[]"
+                    val jsonArray = org.json.JSONArray(bodyStr)
+                    val list = mutableListOf<BackendClient>()
+                    for (i in 0 until jsonArray.length()) {
+                        val obj = jsonArray.getJSONObject(i)
+                        val srv = when {
+                            !obj.isNull("service") -> obj.optString("service")
+                            !obj.isNull("payment_service") -> obj.optString("payment_service")
+                            !obj.isNull("operator") -> obj.optString("operator")
+                            else -> null
+                        }
+                        list.add(
+                            BackendClient(
+                                id = obj.optLong("id", i.toLong() + 1),
+                                name = obj.optString("name", obj.optString("username", "Inconnu")),
+                                phone = obj.optString("phone", obj.optString("phone_number", "")),
+                                email = obj.optString("email", ""),
+                                balance = obj.optDouble("balance", obj.optDouble("solde", 0.0)),
+                                service = srv
+                            )
+                        )
+                    }
+                    list
+                } else {
+                    Log.e("ClientsTab", "Request failed with code ${resp.code}")
+                    emptyList()
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("ClientsTab", "Error fetching clients: ${e.message}", e)
+            emptyList()
+        }
+    }
+}
+
+suspend fun askGeminiForMatch(
+    depositor: SmsDepositor,
+    unlinkedClients: List<BackendClient>
+): GeminiMatchResult? {
+    return withContext(Dispatchers.IO) {
+        val apiKey = try { com.pettycash.cashsms.BuildConfig.GEMINI_API_KEY } catch (e: Exception) { "" }
+        if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
+            delay(1500) // simulation
+            val bestMatch = unlinkedClients.firstOrNull { 
+                it.name.contains(depositor.displayName.take(3), ignoreCase = true) ||
+                depositor.displayName.contains(it.name.take(3), ignoreCase = true)
+            }
+            if (bestMatch != null) {
+                GeminiMatchResult(
+                    matchedClientId = bestMatch.id,
+                    confidence = 94,
+                    reason = "IA Suggestion (Démonstration): Correspondance étroite trouvée sur le nom '${depositor.displayName}' et '${bestMatch.name}' (ID: ${bestMatch.id})."
+                )
+            } else {
+                GeminiMatchResult(
+                    matchedClientId = null,
+                    confidence = 0,
+                    reason = "Aucune correspondance automatique évidente trouvée dans les données clients."
+                )
+            }
+        } else {
+            val clientsJson = unlinkedClients.map { 
+                mapOf("id" to it.id, "name" to it.name, "phone" to it.phone, "email" to it.email, "service" to it.service)
+            }.let { org.json.JSONArray(it).toString() }
+
+            val prompt = """
+                Tu es un expert en réconciliation de transactions financières pour une application de transfert d'argent.
+                Nous avons reçu un message SMS d'un client ayant effectué un dépôt :
+                Nom affiché dans le SMS: "${depositor.displayName}"
+                Numéro ou identifiant du SMS: "${depositor.phoneNumber}"
+                
+                Voici la liste des clients enregistrés sur notre serveur avec leurs comptes et leurs services de paiement associés :
+                $clientsJson
+                
+                Trouve le client enregistré qui correspond le mieux à cet expéditeur de SMS (en gérant les indicatifs comme +225, +221, l'écriture du nom comme ALBERT ESSOMBA vs Albert E., ainsi que le service de paiement s'il est mentionné).
+                Retourne UNIQUEMENT un objet JSON avec les clés suivantes :
+                - "matched_client_id": l'identifiant (ID) du client correspondant, ou null si aucun ne correspond.
+                - "confidence": le taux de confiance en pourcentage (0 à 100).
+                - "reason": une explication courte en français de ton choix expliquant la liaison ou l'absence de liaison.
+                Ne mets aucun texte explicatif avant ou après le JSON. Retourne uniquement l'objet JSON brut.
+            """.trimIndent()
+
+            val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey"
+            val requestBodyJson = """
+                {
+                  "contents": [
+                    {
+                      "parts": [
+                        {
+                          "text": ${org.json.JSONObject.quote(prompt)}
+                        }
+                      ]
+                    }
+                  ],
+                  "generationConfig": {
+                    "responseMimeType": "application/json"
+                  }
+                }
+            """.trimIndent()
+
+            val client = okhttp3.OkHttpClient()
+            val mediaType = "application/json; charset=utf-8".toMediaType()
+            val request = okhttp3.Request.Builder()
+                .url(url)
+                .post(requestBodyJson.toRequestBody(mediaType))
+                .build()
+
+            try {
+                val response = client.newCall(request).execute()
+                response.use { resp ->
+                    if (resp.isSuccessful) {
+                        val respBody = resp.body?.string() ?: ""
+                        val responseJson = org.json.JSONObject(respBody)
+                        val candidates = responseJson.optJSONArray("candidates")
+                        if (candidates != null && candidates.length() > 0) {
+                            val content = candidates.getJSONObject(0).getJSONObject("content")
+                            val parts = content.getJSONArray("parts")
+                            if (parts.length() > 0) {
+                                val textResult = parts.getJSONObject(0).getString("text")
+                                val matchJson = org.json.JSONObject(textResult.trim())
+                                val idVal = if (matchJson.isNull("matched_client_id")) null else matchJson.getLong("matched_client_id")
+                                val confVal = matchJson.optInt("confidence", 0)
+                                val reasonVal = matchJson.optString("reason", "Analyse complétée.")
+                                GeminiMatchResult(idVal, confVal, reasonVal)
+                            } else null
+                        } else null
+                    } else null
+                }
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+}
+
+@Composable
+fun ServiceBadge(service: String?) {
+    if (service.isNullOrBlank()) return
+    val (label, color) = remember(service) {
+        val clean = service.uppercase().trim()
+        when {
+            clean.contains("MTN") || clean.contains("MOMO") -> Pair("MTN MoMo", Color(0xFFFFCC00))
+            clean.contains("ORANGE") || clean.contains("OM") -> Pair("Orange Money", Color(0xFFFF6600))
+            clean.contains("WAVE") -> Pair("Wave", Color(0xFF1D9BF0))
+            clean.contains("MOOV") || clean.contains("FLOOZ") -> Pair("Moov Money", Color(0xFF00875A))
+            else -> Pair(service, Color(0xFF888888))
+        }
+    }
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = color.copy(alpha = 0.15f),
+        border = androidx.compose.foundation.BorderStroke(1.dp, color.copy(alpha = 0.5f)),
+        modifier = Modifier.padding(start = 6.dp)
+    ) {
+        Text(
+            text = label,
+            color = color,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+        )
+    }
+}
+
+@Composable
+fun ClientsTabRedesigned(
+    messages: List<SmsMessageWithSync>,
+    baseUrl: String,
+    token: String,
+    backendType: String
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    var backendClients by remember { mutableStateOf<List<BackendClient>>(emptyList()) }
+    var isSyncingClients by remember { mutableStateOf(false) }
+    var syncError by remember { mutableStateOf<String?>(null) }
+    var activeSubTab by remember { mutableStateOf(0) } // 0 = Rapprochements, 1 = Clients Liés, 2 = Base de Données
+
+    // Local state for manual mapping (SMS phone number -> Backend Client ID)
+    var manualMappings by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    
+    // AI analyzer state
+    var selectedDepositorForAi by remember { mutableStateOf<SmsDepositor?>(null) }
+    var isAnalyzingAi by remember { mutableStateOf(false) }
+    var aiResult by remember { mutableStateOf<GeminiMatchResult?>(null) }
+
+    // Client creation states (la creation se fait a partir des messages)
+    var showCreateClientDialog by remember { mutableStateOf(false) }
+    var depositorToCreateClientFor by remember { mutableStateOf<SmsDepositor?>(null) }
+    var newClientName by remember { mutableStateOf("") }
+    var newClientPhone by remember { mutableStateOf("") }
+    var newClientEmail by remember { mutableStateOf("") }
+    var newClientService by remember { mutableStateOf("MTNMOMO") }
+    var newClientBalance by remember { mutableStateOf("0") }
+
+    val displayClients = backendClients
+
+    // Load clients
+    fun syncClients() {
+        if (baseUrl.isBlank() || token.isBlank()) {
+            backendClients = emptyList()
+            return
+        }
+        isSyncingClients = true
+        syncError = null
+        scope.launch {
+            val list = fetchClientsFromBackend(baseUrl, token, backendType)
+            if (list.isNotEmpty()) {
+                backendClients = list
+            } else {
+                backendClients = emptyList()
+                syncError = "Aucun client trouvé sur le serveur ou impossible de joindre le point de terminaison."
+            }
+            isSyncingClients = false
+        }
+    }
+
+    // Trigger sync on open
+    LaunchedEffect(baseUrl, token, backendType) {
+        syncClients()
+    }
+
+    // Periodic synchronization (every 30 seconds)
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30000)
+            if (!isSyncingClients) {
+                val list = fetchClientsFromBackend(baseUrl, token, backendType)
+                if (list.isNotEmpty()) {
+                    backendClients = list
+                }
+            }
+        }
+    }
+
+    // Extract SmsDepositors
+    val smsDepositors = remember(messages) {
+        val transactions = messages.mapNotNull { msgWithSync ->
+            val msg = msgWithSync.message
+            FinancialTracker.parseTransaction(
+                body = msg.body.orEmpty(),
+                address = msg.address.orEmpty(),
+                date = msg.date ?: 0L
+            )
+        }.filter { it.type == "IN" }
+
+        val depositorsMap = mutableMapOf<String, Triple<String, Double, Long>>()
+        
+        transactions.forEach { tx ->
+            val match = extractDepositorFromSms(tx.originalMessage)
+            if (match != null) {
+                val (phone, name) = match
+                val existing = depositorsMap[phone]
+                if (existing != null) {
+                    depositorsMap[phone] = Triple(
+                        if (name != phone) name else existing.first,
+                        existing.second + tx.amount,
+                        maxOf(existing.third, tx.date)
+                    )
+                } else {
+                    depositorsMap[phone] = Triple(name, tx.amount, tx.date)
+                }
+            } else {
+                val opName = tx.operator
+                val existing = depositorsMap[opName]
+                if (existing != null) {
+                    depositorsMap[opName] = Triple(opName, existing.second + tx.amount, maxOf(existing.third, tx.date))
+                } else {
+                    depositorsMap[opName] = Triple(opName, tx.amount, tx.date)
+                }
+            }
+        }
+
+        depositorsMap.map { (phone, data) ->
+            SmsDepositor(
+                phoneNumber = phone,
+                displayName = data.first,
+                totalDeposits = data.second,
+                lastDepositDate = data.third,
+                transactionCount = transactions.count { 
+                    val m = extractDepositorFromSms(it.originalMessage)
+                    (m != null && m.first == phone) || (m == null && it.operator == phone)
+                }
+            )
+        }.sortedByDescending { it.lastDepositDate }
+    }
+
+    // Map helpers
+    fun isMatched(depositor: SmsDepositor): Boolean {
+        if (manualMappings.containsKey(depositor.phoneNumber)) return true
+        val depClean = depositor.phoneNumber.replace("""[^0-9]""".toRegex(), "").takeLast(8)
+        if (depClean.isEmpty()) return false
+        return displayClients.any { 
+            it.phone.replace("""[^0-9]""".toRegex(), "").takeLast(8) == depClean
+        }
+    }
+
+    fun getMatchedClient(depositor: SmsDepositor): BackendClient? {
+        val manualId = manualMappings[depositor.phoneNumber]
+        if (manualId != null) {
+            return displayClients.find { it.id == manualId }
+        }
+        val depClean = depositor.phoneNumber.replace("""[^0-9]""".toRegex(), "").takeLast(8)
+        if (depClean.isEmpty()) return null
+        return displayClients.find { 
+            it.phone.replace("""[^0-9]""".toRegex(), "").takeLast(8) == depClean
+        }
+    }
+
+    val unlinkedDepositors = smsDepositors.filter { !isMatched(it) }
+    val linkedDepositors = smsDepositors.filter { isMatched(it) }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Hero card
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.Transparent)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            Brush.linearGradient(
+                                colors = listOf(
+                                    MaterialTheme.colorScheme.primary,
+                                    MaterialTheme.colorScheme.secondary
+                                )
+                            ),
+                            shape = RoundedCornerShape(24.dp)
+                        )
+                        .padding(24.dp)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = Color.White.copy(alpha = 0.2f),
+                                modifier = Modifier.size(48.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        Icons.Default.People,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(24.dp),
+                                        tint = Color.White
+                                    )
+                                }
+                            }
+                            Column {
+                                Text(
+                                    "Gestion Clients",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                                Text(
+                                    "Rapprochement automatique via Intelligence Artificielle",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = Color.White.copy(alpha = 0.8f)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Metrics Row
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Card(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f))
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text("Total Base", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        Text("${displayClients.size}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    }
+                }
+                Card(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f))
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text("À Lier", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                        Text("${unlinkedDepositors.size}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    }
+                }
+                Card(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.4f))
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text("Rapprochés", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
+                        Text("${linkedDepositors.size}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        // Sync Info / Error bar
+        syncError?.let { err ->
+            item {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                        Text(err, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
+                    }
+                }
+            }
+        }
+
+        // Tabs row
+        item {
+            TabRow(
+                selectedTabIndex = activeSubTab,
+                containerColor = Color.Transparent,
+                divider = {}
+            ) {
+                Tab(
+                    selected = activeSubTab == 0,
+                    onClick = { activeSubTab = 0 },
+                    text = { Text("À Lier (${unlinkedDepositors.size})", fontWeight = FontWeight.Bold) }
+                )
+                Tab(
+                    selected = activeSubTab == 1,
+                    onClick = { activeSubTab = 1 },
+                    text = { Text("Liés (${linkedDepositors.size})", fontWeight = FontWeight.Bold) }
+                )
+                Tab(
+                    selected = activeSubTab == 2,
+                    onClick = { activeSubTab = 2 },
+                    text = { Text("Base (${displayClients.size})", fontWeight = FontWeight.Bold) }
+                )
+            }
+        }
+
+        // Active selection lists
+        when (activeSubTab) {
+            0 -> {
+                if (displayClients.isEmpty()) {
+                    item {
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.CloudOff, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                    Text("Mode local activé", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                }
+                                Text(
+                                    "Aucun client n'est synchronisé depuis votre serveur. Vous pouvez créer des clients directement à partir des messages ci-dessous pour les lier, ou configurer vos accès dans l'onglet Paramètres.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+                
+                if (unlinkedDepositors.isEmpty()) {
+                    item {
+                        Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                            Text("Aucun dépôt non rapproché trouvé.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                } else {
+                    items(unlinkedDepositors) { dep ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.size(40.dp)) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Text(
+                                                    text = dep.displayName.take(1).uppercase(),
+                                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
+                                        Column {
+                                            Text(dep.displayName, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
+                                            Text(dep.phoneNumber, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                    
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(
+                                            FinancialTracker.formatFCFA(dep.totalDeposits),
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            fontWeight = FontWeight.Black,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        Text("${dep.transactionCount} dépôts", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Button(
+                                        onClick = {
+                                            selectedDepositorForAi = dep
+                                            isAnalyzingAi = true
+                                            aiResult = null
+                                            scope.launch {
+                                                val res = askGeminiForMatch(dep, displayClients)
+                                                aiResult = res
+                                                isAnalyzingAi = false
+                                            }
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                    ) {
+                                        Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Analyse IA", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
+                                    }
+
+                                    Button(
+                                        onClick = {
+                                            depositorToCreateClientFor = dep
+                                            newClientName = dep.displayName
+                                            newClientPhone = dep.phoneNumber
+                                            newClientEmail = ""
+                                            newClientService = when {
+                                                dep.displayName.uppercase().contains("MTN") || dep.phoneNumber.contains("97") || dep.phoneNumber.contains("96") || dep.phoneNumber.contains("61") || dep.phoneNumber.contains("62") -> "MTNMOMO"
+                                                dep.displayName.uppercase().contains("ORANGE") || dep.phoneNumber.contains("95") || dep.phoneNumber.contains("94") || dep.phoneNumber.contains("07") || dep.phoneNumber.contains("08") -> "ORANGE"
+                                                dep.displayName.uppercase().contains("WAVE") || dep.phoneNumber.contains("wave") -> "WAVE"
+                                                dep.displayName.uppercase().contains("MOOV") -> "MOOV"
+                                                else -> "MTNMOMO"
+                                            }
+                                            newClientBalance = dep.totalDeposits.toInt().toString()
+                                            showCreateClientDialog = true
+                                        },
+                                        modifier = Modifier.weight(1.2f),
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                                    ) {
+                                        Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Créer Client", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
+                                    }
+
+                                    // Manual match popup/selector
+                                    var showManualSelect by remember { mutableStateOf(false) }
+                                    Box(modifier = Modifier.weight(1.1f)) {
+                                        OutlinedButton(
+                                            onClick = { showManualSelect = true },
+                                            shape = RoundedCornerShape(12.dp),
+                                            contentPadding = PaddingValues(horizontal = 4.dp)
+                                        ) {
+                                            Text("Lier", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
+                                        }
+                                        DropdownMenu(
+                                            expanded = showManualSelect,
+                                            onDismissRequest = { showManualSelect = false }
+                                        ) {
+                                            displayClients.forEach { c ->
+                                                DropdownMenuItem(
+                                                    text = { Text("${c.name} (${c.phone})") },
+                                                    onClick = {
+                                                        manualMappings = manualMappings + (dep.phoneNumber to c.id)
+                                                        showManualSelect = false
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            1 -> {
+                if (linkedDepositors.isEmpty()) {
+                    item {
+                        Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                            Text("Aucun rapprochement validé.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                } else {
+                    items(linkedDepositors) { dep ->
+                        val matchedClient = getMatchedClient(dep)
+                        val mainDisplayName = matchedClient?.name ?: dep.displayName
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(16.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Surface(shape = CircleShape, color = MaterialTheme.colorScheme.tertiaryContainer, modifier = Modifier.size(40.dp)) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Text(
+                                                text = mainDisplayName.take(1).uppercase(),
+                                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                    Column {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(mainDisplayName, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
+                                            ServiceBadge(service = matchedClient?.service)
+                                        }
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.tertiary)
+                                            Text("SMS: ${dep.displayName} (${dep.phoneNumber})", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                                        }
+                                    }
+                                }
+
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text(
+                                        FinancialTracker.formatFCFA(dep.totalDeposits),
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        fontWeight = FontWeight.Black,
+                                        color = MaterialTheme.colorScheme.tertiary
+                                    )
+                                    Text("${dep.transactionCount} dépôts", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            2 -> {
+                if (displayClients.isEmpty()) {
+                    item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            shape = RoundedCornerShape(24.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CloudOff,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(64.dp),
+                                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+                                )
+                                Text(
+                                    "Aucun client connecté",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    "Veuillez configurer votre serveur dans l'onglet Paramètres pour synchroniser vos clients réels et leurs services de paiement.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    textAlign = TextAlign.Center,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                
+                                Button(
+                                    onClick = { syncClients() },
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Actualiser la connexion", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    items(displayClients) { client ->
+                        val initials = client.name.take(2).uppercase()
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(16.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(40.dp)) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Text(initials, color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                    Column {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(client.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
+                                            ServiceBadge(service = client.service)
+                                        }
+                                        Text(client.phone, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text(
+                                        FinancialTracker.formatFCFA(client.balance),
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text("Solde Base", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // AI dialog
+    selectedDepositorForAi?.let { dep ->
+        Dialog(onDismissRequest = { selectedDepositorForAi = null }) {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("Analyse de Liaison par IA", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    
+                    Text(
+                        "Recherche du meilleur client pour :\n${dep.displayName} (${dep.phoneNumber})",
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    if (isAnalyzingAi) {
+                        CircularProgressIndicator()
+                        Text("Analyse en cours avec Gemini...", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    } else {
+                        aiResult?.let { res ->
+                            val matched = displayClients.find { it.id == res.matchedClientId }
+                            
+                            if (matched != null) {
+                                Surface(
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.3f),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary)
+                                            Text("Suggéré : ${matched.name}", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                                        }
+                                        LinearProgressIndicator(
+                                            progress = { res.confidence / 100f },
+                                            modifier = Modifier.fillMaxWidth().clip(CircleShape),
+                                            color = MaterialTheme.colorScheme.tertiary
+                                        )
+                                        Text("Confiance : ${res.confidence}%", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                                        Text(res.reason, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                                    }
+                                }
+
+                                Button(
+                                    onClick = {
+                                        manualMappings = manualMappings + (dep.phoneNumber to matched.id)
+                                        selectedDepositorForAi = null
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
+                                ) {
+                                    Text("Confirmer la liaison", fontWeight = FontWeight.Bold)
+                                }
+                            } else {
+                                Surface(
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                                            Text("Aucune correspondance", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onErrorContainer)
+                                        }
+                                        Text(res.reason, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onErrorContainer)
+                                    }
+                                }
+                            }
+                        }
+
+                        OutlinedButton(
+                            onClick = { selectedDepositorForAi = null },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Fermer")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Client creation dialog (la creation se fait a partir des messages)
+    if (showCreateClientDialog && depositorToCreateClientFor != null) {
+        val dep = depositorToCreateClientFor!!
+        Dialog(onDismissRequest = { showCreateClientDialog = false }) {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+            ) {
+                LazyColumn(
+                    modifier = Modifier.padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    item {
+                        Text(
+                            "Créer et Lier un Client",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.fillMaxWidth(),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+
+                    item {
+                        OutlinedTextField(
+                            value = newClientName,
+                            onValueChange = { newClientName = it },
+                            label = { Text("Nom d'utilisateur / Username") },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    }
+
+                    item {
+                        OutlinedTextField(
+                            value = newClientPhone,
+                            onValueChange = { newClientPhone = it },
+                            label = { Text("Téléphone") },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    }
+
+                    item {
+                        OutlinedTextField(
+                            value = newClientEmail,
+                            onValueChange = { newClientEmail = it },
+                            label = { Text("E-mail (Optionnel)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    }
+
+                    item {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("Service de Paiement Associé", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                            val servicesList = listOf(
+                                "MTNMOMO" to "MTN MoMo",
+                                "ORANGE" to "Orange Money",
+                                "WAVE" to "Wave",
+                                "MOOV" to "Moov Money",
+                                "AUTRE" to "Autre"
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                servicesList.forEach { (srvCode, srvLabel) ->
+                                    val isSel = newClientService == srvCode
+                                    val bgCol = if (isSel) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                                    val borderCol = if (isSel) MaterialTheme.colorScheme.primary else Color.Transparent
+                                    val textCol = if (isSel) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                    Surface(
+                                        modifier = Modifier.clickable { newClientService = srvCode },
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = bgCol,
+                                        border = if (isSel) androidx.compose.foundation.BorderStroke(1.5.dp, borderCol) else null
+                                    ) {
+                                        Text(
+                                            text = srvLabel,
+                                            color = textCol,
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
+                                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    item {
+                        OutlinedTextField(
+                            value = newClientBalance,
+                            onValueChange = { newClientBalance = it },
+                            label = { Text("Solde Initial (FCFA)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                    }
+
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { showCreateClientDialog = false },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Text("Annuler")
+                            }
+                            Button(
+                                onClick = {
+                                    val solde = newClientBalance.toDoubleOrNull() ?: 0.0
+                                    val newId = (backendClients.maxOfOrNull { it.id } ?: 0L) + 1L
+                                    val newClient = BackendClient(
+                                        id = newId,
+                                        name = newClientName,
+                                        phone = newClientPhone,
+                                        email = newClientEmail,
+                                        balance = solde,
+                                        service = newClientService
+                                    )
+                                    // Add to local list of backend clients
+                                    backendClients = backendClients + newClient
+                                    // Map them immediately!
+                                    manualMappings = manualMappings + (dep.phoneNumber to newId)
+                                    showCreateClientDialog = false
+                                },
+                                modifier = Modifier.weight(1.5f),
+                                shape = RoundedCornerShape(12.dp),
+                                enabled = newClientName.isNotBlank() && newClientPhone.isNotBlank()
+                            ) {
+                                Text("Créer & Lier", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
                 }
             }
         }

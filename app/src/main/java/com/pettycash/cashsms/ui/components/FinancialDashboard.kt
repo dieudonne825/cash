@@ -39,7 +39,8 @@ data class FinancialTransaction(
     val category: String, // "Dépôt", "Retrait", "Transfert", "Achat", "Remboursement", "Autre"
     val operator: String, // "Orange Money", "Airtel Money", "Wave", "MTN MoMo", "Petty Cash", "Autre"
     val originalMessage: String,
-    val date: Long
+    val date: Long,
+    val balance: Double? = null
 )
 
 object FinancialTracker {
@@ -144,13 +145,30 @@ object FinancialTracker {
             else -> "Autre"
         }
 
+        // Parse balance
+        var foundBalance: Double? = null
+        val balancePatterns = listOf(
+            """(?:nouveau\s+solde(?:\s+\w+){0,3}[:\s]+|solde\s+(?:\w+\s+){0,2}est\s+de\s+|solde\s*:\s*)([0-9\s.,]+)\s*(?:fcfa|f\s*cfa|xof|xaf|f\b)""".toRegex()
+        )
+        for (pattern in balancePatterns) {
+            val match = pattern.find(normalizedBody)
+            if (match != null) {
+                val parsed = parseAmountString(match.groupValues[1])
+                if (parsed != null) {
+                    foundBalance = parsed
+                    break
+                }
+            }
+        }
+
         return FinancialTransaction(
             amount = foundAmount,
             type = foundType ?: "IN",
             category = category,
             operator = operator,
             originalMessage = body,
-            date = date
+            date = date,
+            balance = foundBalance
         )
     }
 
@@ -194,16 +212,42 @@ fun FinancialDashboardCard(
     var selectedOperatorFilter by remember { mutableStateOf("Tous") }
     var isExpandedDetails by remember { mutableStateOf(false) }
 
-    // Filter transactions
+    // Sort transactions by date descending to find the latest easily
+    val operatorLatestBalances = remember(transactions) {
+        val operatorsList = transactions.map { it.operator }.distinct()
+        operatorsList.associateWith { op ->
+            val sortedTx = transactions.filter { it.operator == op }.sortedByDescending { it.date }
+            val latestWithBalance = sortedTx.firstOrNull { it.balance != null }
+            if (latestWithBalance != null) {
+                latestWithBalance.balance!!
+            } else {
+                // Fallback to computed balance if no SMS has the balance
+                val opIn = sortedTx.filter { it.type == "IN" }.sumOf { it.amount }
+                val opOut = sortedTx.filter { it.type == "OUT" }.sumOf { it.amount }
+                opIn - opOut
+            }
+        }
+    }
+
+    // Filter transactions for details list
     val filteredTx = remember(transactions, selectedOperatorFilter) {
         if (selectedOperatorFilter == "Tous") transactions
         else transactions.filter { it.operator == selectedOperatorFilter }
     }
 
-    // Totals
+    // Totals for selected filter
     val totalIn = filteredTx.filter { it.type == "IN" }.sumOf { it.amount }
     val totalOut = filteredTx.filter { it.type == "OUT" }.sumOf { it.amount }
-    val netBalance = totalIn - totalOut
+    
+    // Net balance according to user's request:
+    // "le solde par operateur soit pris en fonction du solde du dernier message financier de l'operateur"
+    val netBalance = remember(selectedOperatorFilter, operatorLatestBalances, totalIn, totalOut) {
+        if (selectedOperatorFilter == "Tous") {
+            operatorLatestBalances.values.sum()
+        } else {
+            operatorLatestBalances[selectedOperatorFilter] ?: (totalIn - totalOut)
+        }
+    }
 
     // Operator list for filter tabs
     val operators = remember(transactions) {
@@ -359,7 +403,7 @@ fun FinancialDashboardCard(
 
             // Operator Horizontal Filter Tabs
             Text(
-                text = "Filtrer par Opérateur",
+                text = "Filtrer par Opérateur & Solde",
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -381,6 +425,12 @@ fun FinancialDashboardCard(
                         else -> MaterialTheme.colorScheme.secondary
                     }
 
+                    val opBal = if (op == "Tous") {
+                        operatorLatestBalances.values.sum()
+                    } else {
+                        operatorLatestBalances[op] ?: 0.0
+                    }
+
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
@@ -392,16 +442,28 @@ fun FinancialDashboardCard(
                             .clickable { selectedOperatorFilter = op }
                             .padding(horizontal = 14.dp, vertical = 8.dp)
                     ) {
-                        Text(
-                            text = op,
-                            color = if (isSelected) {
-                                if (op == "MTN MoMo") Color.Black else Color.White
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
-                        )
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = op,
+                                color = if (isSelected) {
+                                    if (op == "MTN MoMo") Color.Black else Color.White
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                            )
+                            Text(
+                                text = FinancialTracker.formatFCFA(opBal),
+                                color = if (isSelected) {
+                                    if (op == "MTN MoMo") Color.Black.copy(alpha = 0.7f) else Color.White.copy(alpha = 0.8f)
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
             }

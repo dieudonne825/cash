@@ -37,4 +37,23 @@ object LaravelClient {
             throw e
         }
     }
+
+    fun getJson(url: String, token: String): okhttp3.Response {
+        Log.d(TAG, "GET request to: $url")
+        val authHeaderValue = if (token.startsWith("Bearer ", ignoreCase = true)) token else "Bearer $token"
+        val request = Request.Builder()
+            .url(url)
+            .addHeader("Authorization", authHeaderValue)
+            .addHeader("Accept", "application/json")
+            .get()
+            .build()
+        try {
+            val response = client.newCall(request).execute()
+            Log.d(TAG, "Response received - Code: ${response.code}")
+            return response
+        } catch (e: Exception) {
+            Log.e(TAG, "Network error: ${e.message}", e)
+            throw e
+        }
+    }
 }

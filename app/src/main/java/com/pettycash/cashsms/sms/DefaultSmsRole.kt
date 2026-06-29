@@ -13,27 +13,18 @@ object DefaultSmsRole {
         return Telephony.Sms.getDefaultSmsPackage(context) == pkg
     }
 
-    /**
-     * Android 10+ uses RoleManager. Older versions use ACTION_CHANGE_DEFAULT.
-     */
-    fun requestDefaultSmsRole(activity: Activity, onReturned: () -> Unit) {
+    fun getDefaultSmsIntent(context: Context): Intent? {
+        if (isDefaultSmsApp(context)) return null
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val roleManager = activity.getSystemService(RoleManager::class.java)
-            if (roleManager.isRoleAvailable(RoleManager.ROLE_SMS) && !roleManager.isRoleHeld(RoleManager.ROLE_SMS)) {
-                activity.startActivityForResult(
-                    roleManager.createRequestRoleIntent(RoleManager.ROLE_SMS),
-                    1101
-                )
-                onReturned()
-                return
+            val roleManager = context.getSystemService(RoleManager::class.java)
+            if (roleManager != null && roleManager.isRoleAvailable(RoleManager.ROLE_SMS) && !roleManager.isRoleHeld(RoleManager.ROLE_SMS)) {
+                return roleManager.createRequestRoleIntent(RoleManager.ROLE_SMS)
             }
         }
 
-        // Fallback (also works on many devices)
-        val intent = Intent(Telephony.Sms.Intents.ACTION_CHANGE_DEFAULT).apply {
-            putExtra(Telephony.Sms.Intents.EXTRA_PACKAGE_NAME, activity.packageName)
+        return Intent(Telephony.Sms.Intents.ACTION_CHANGE_DEFAULT).apply {
+            putExtra(Telephony.Sms.Intents.EXTRA_PACKAGE_NAME, context.packageName)
         }
-        activity.startActivity(intent)
-        onReturned()
     }
 }

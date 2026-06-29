@@ -59,41 +59,10 @@ fun ConnectionSection(
     onSyncNow: () -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        // Choix du Type de Backend
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Button(
-                onClick = { onBackendTypeChange("DJANGO") },
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (backendType == "DJANGO") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                    contentColor = if (backendType == "DJANGO") MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
-                ),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text("Django Backend", fontWeight = FontWeight.SemiBold)
-            }
-            Button(
-                onClick = { onBackendTypeChange("LARAVEL") },
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (backendType == "LARAVEL") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                    contentColor = if (backendType == "LARAVEL") MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
-                ),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text("Laravel Backend", fontWeight = FontWeight.SemiBold)
-            }
-        }
-
-        Spacer(modifier = Modifier.height(4.dp))
-
         OutlinedTextField(
             value = baseUrl,
             onValueChange = onBaseUrlChange,
-            label = { Text(if (backendType == "LARAVEL") "URL du serveur Laravel" else "URL du serveur Django") },
+            label = { Text("URL du serveur de synchronisation") },
             placeholder = { Text("https://api.exemple.com") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
@@ -122,7 +91,7 @@ fun ConnectionSection(
         OutlinedTextField(
             value = loginUsername,
             onValueChange = onUsernameChange,
-            label = { Text(if (backendType == "LARAVEL") "Adresse email (Laravel)" else "Nom d'utilisateur (Django)") },
+            label = { Text("Identifiant ou Adresse e-mail") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
             leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
@@ -237,7 +206,7 @@ fun ConnectionSection(
         OutlinedTextField(
             value = token,
             onValueChange = onTokenChange,
-            label = { Text(if (backendType == "LARAVEL") "Token Bearer / Sanctum" else "Token DRF") },
+            label = { Text("Clé API / Token d'accès sécurisé") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
             leadingIcon = { Icon(Icons.Default.VpnKey, contentDescription = null) },
