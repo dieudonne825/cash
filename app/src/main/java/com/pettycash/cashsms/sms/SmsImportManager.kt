@@ -87,8 +87,8 @@ object SmsImportManager {
                 Triple("PettyCash", "Alerte Petty Cash: Connexion detectee sur un nouvel appareil a Abidjan.", now - 3600000 * 8),
                 
                 // Orange Money Messages
-                Triple("OrangeMoney", "Transfert effectue. Vous avez envoye 15 000 FCFA au +2250707070707. Frais: 150 FCFA. Nouveau solde: 32 450 FCFA. Reference: OM930281.21", now - 3600000 * 7),
-                Triple("OrangeMoney", "Depot de 50 000 FCFA reussi via l'agent SENE-SHOP. Nouveau solde: 82 450 FCFA. Reference: OM281938.45", now - 3600000 * 6),
+                Triple("OrangeMoney", "Transfert de 656569918 EFFALA AMOUGOU vers 688137007 BELOBO SANANG reussi. Details: ID transaction: PP260701.1220.C86384, Montant Transaction: 3054FCFA, Frais: 0 FCFA, Commission: 0 FCFA, Montant Net: 3054 FCFA, Nouveau Solde: 28056.4 FCFA.", now - 3600000 * 7),
+                Triple("OrangeMoney", "Retrait d'argent reussi par le 695973770 avec le Code : 266364. Informations detaillees : Montant: 2500 FCFA, Frais: 54 FCFA, No de transaction CO260701.1245.B16503, montant net debite 2554 FCFA, Nouveau solde: 25502.4 FCFA.", now - 3600000 * 6),
                 
                 // Airtel Money Messages
                 Triple("AirtelMoney", "Depot effectue de 30 000 FCFA chez Petty Cash Agent. Nouveau solde Airtel Money: 34 200 FCFA. ID Trans: TXN7728391.", now - 3600000 * 5),

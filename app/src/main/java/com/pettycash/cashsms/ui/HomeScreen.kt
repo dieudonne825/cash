@@ -141,7 +141,7 @@ fun HomeScreen(
         if (activeTargetId == 0L) flowOf(emptyList())
         else {
             Log.d(TAG, "Nouveau flow pour targetId=$activeTargetId, trigger=$refreshTrigger")
-            app.db.syncDao().watchLatestWithSync(targetId = activeTargetId, limit = 50)
+            app.db.syncDao().watchLatestWithSync(targetId = activeTargetId, limit = 500)
         }
     }
     val latest by flow.collectAsStateWithLifecycle(initialValue = emptyList())

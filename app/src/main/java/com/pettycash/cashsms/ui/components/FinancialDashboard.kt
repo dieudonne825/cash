@@ -124,7 +124,9 @@ object FinancialTracker {
                            normalizedBody.contains("facture") || 
                            normalizedBody.contains("transféré") || 
                            normalizedBody.contains("transfere") || 
-                           normalizedBody.contains("frais de")
+                           normalizedBody.contains("frais de") ||
+                           normalizedBody.contains("vers") || // transferring/sending "vers" (to) someone is OUT
+                           (normalizedBody.contains("transfert") && !normalizedBody.contains("recu") && !normalizedBody.contains("reçu") && !normalizedBody.contains("reception") && !normalizedBody.contains("réception"))
 
         val isDeposit = normalizedBody.contains("dépôt") || 
                         normalizedBody.contains("depot") || 
@@ -159,7 +161,7 @@ object FinancialTracker {
 
         // Patterns to match the main transaction amount
         val transactionPatterns = listOf(
-            """(?:depot\s+effectue\s+de|depot\s+de|depot|recu|reçu|remboursement|credit\s+de|crédit\s+de|retrait\s+de|retrait|paiement\s+de|paiement|achat\s+approuve\s+de|achat|debit\s+de|débit\s+de|transfert\s+de|transfert|paye|payé)\s+([0-9\s.,]+)\s*(?:fcfa|f\s*cfa|xof|xaf|f\b)""".toRegex(),
+            """(?:depot\s+effectue\s+de|depot\s+de|depot|recu|reçu|remboursement|credit\s+de|crédit\s+de|retrait\s+de|retrait|paiement\s+de|paiement|achat\s+approuve\s+de|achat|debit\s+de|débit\s+de|transfert\s+de|transfert|paye|payé|montant\s+transaction[:\s]*|montant\s+net[:\s]*|montant[:\s]*|montant\s+net\s+debite[:\s]*|montant\s+net\s+débité[:\s]*)\s*([0-9\s.,]+)\s*(?:fcfa|f\s*cfa|xof|xaf|f\b)""".toRegex(),
             """([0-9\s.,]+)\s*(?:fcfa|f\s*cfa|xof|xaf|f\b)\s+(?:recu|reçu|rembourse|envoye|envoyé|retrait|paye|payé|achat)""".toRegex(),
             """([0-9\s.,]{2,12})\s*(?:fcfa|f\s*cfa|xof|xaf|f\b)""".toRegex()
         )
@@ -246,12 +248,27 @@ object FinancialTracker {
         if (s.endsWith(".") || s.endsWith(",")) {
             s = s.dropLast(1).trim()
         }
-        val clean = s.replace(" ", "")
-            .replace(",", "")
-            .replace(".", "")
-            .replace("\u00A0", "")
-            .trim()
-        return clean.toDoubleOrNull()
+        
+        // Remove spaces, non-breaking spaces, and thin spaces
+        s = s.replace(" ", "")
+             .replace("\u00A0", "")
+             .replace("\u202F", "")
+             .trim()
+
+        // Check if there is a decimal suffix (like .X or .XX or ,X or ,XX) at the end
+        val hasDecimalSuffix = s.matches(""".*[\.,]\d{1,2}$""".toRegex())
+        return if (hasDecimalSuffix) {
+            // Find the last index of dot or comma which acts as the decimal separator
+            val separatorIndex = s.lastIndexOfAny(charArrayOf('.', ','))
+            val integerPart = s.substring(0, separatorIndex).replace(".", "").replace(",", "")
+            val decimalPart = s.substring(separatorIndex + 1)
+            val cleanStr = "$integerPart.$decimalPart"
+            cleanStr.toDoubleOrNull()
+        } else {
+            // If no decimal suffix, clean all commas and dots as thousands separators
+            val cleanStr = s.replace(",", "").replace(".", "")
+            cleanStr.toDoubleOrNull()
+        }
     }
 
     fun formatFCFA(amount: Double): String {
