@@ -2083,7 +2083,7 @@ fun SettingsTabRedesigned(
                         ) {
                             Column {
                                 Text("Code PIN d'accès", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
-                                Text("Code actuel : ****", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Code actuel : $savedPinValue", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Button(
                                 onClick = {
@@ -2350,39 +2350,80 @@ data class GeminiMatchResult(
 )
 
 fun extractDepositorFromSms(body: String): Pair<String, String>? {
-    val clean = body.replace("\n", " ").replace("\r", " ")
-    
-    // Pattern 1: de NAME (+PHONE)
-    val pat1 = """de\s+([A-Z\s.-]{3,30})\s*\(([^)]+)\)""".toRegex(RegexOption.IGNORE_CASE)
+    val clean = body.replace("\n", " ").replace("\r", " ").replace("\\s+".toRegex(), " ")
+    if (clean.isBlank()) return null
+
+    // Helper: check if a name/phone is an operator name
+    fun isOp(s: String): Boolean {
+        val c = s.uppercase().trim().replace(" ", "").replace("_", "")
+        return c.isEmpty() || c.contains("ORANGE") || c.contains("MTN") || c.contains("MOMO") || 
+               c.contains("WAVE") || c.contains("WAYE") || c.contains("AIRTEL") || 
+               c.contains("FLOOZ") || c.contains("MOOV")
+    }
+
+    // Pattern 1: de NAME (+PHONE) or reçu de NAME (PHONE)
+    val pat1 = """(?:de|reçu de|recu de)\s+([A-Z\s.-]{3,35})\s*\(([^)]+)\)""".toRegex(RegexOption.IGNORE_CASE)
     val m1 = pat1.find(clean)
     if (m1 != null) {
         val name = m1.groupValues[1].trim()
         val phone = m1.groupValues[2].trim()
-        if (name.length > 2 && phone.length > 5) {
+        if (name.length > 2 && phone.length > 5 && !isOp(name) && !isOp(phone)) {
             return Pair(phone, name)
         }
     }
-    
+
+    // Pattern 1b: de NAME, téléphone/numéro PHONE
+    val pat1bSpaces = """(?:de|reçu de|recu de)\s+([A-Z\s.-]{3,35})\s+(?:tél|tel|téléphone|num|no)?\s*:?\s*(\+?[0-9\s]{8,20})""".toRegex(RegexOption.IGNORE_CASE)
+    val m1bSpaces = pat1bSpaces.find(clean)
+    if (m1bSpaces != null) {
+        val name = m1bSpaces.groupValues[1].trim()
+        val phone = m1bSpaces.groupValues[2].replace(" ", "").trim()
+        if (name.length > 2 && phone.length >= 7 && !isOp(name) && !isOp(phone)) {
+            return Pair(phone, name)
+        }
+    }
+
     // Pattern 2: de +PHONE (e.g., Transfert recu de 20 000 FCFA de +22997123456)
-    val pat2 = """de\s+(\+?[0-9\s]{6,20})""".toRegex()
-    val m2 = pat2.find(clean)
+    val pat2 = """de\s+(\+?[0-9]{7,15})""".toRegex()
+    val m2 = pat2.find(clean.replace(" ", ""))
     if (m2 != null) {
-        val phone = m2.groupValues[1].replace(" ", "").trim()
-        if (phone.length >= 7) {
+        val phone = m2.groupValues[1].trim()
+        if (phone.length >= 7 && !isOp(phone)) {
             return Pair(phone, phone)
         }
     }
-    
+
     // Pattern 3: via l'agent AGENT_NAME
     val pat3 = """via\s+l'agent\s+([A-Z0-9\s.-]{3,30})""".toRegex(RegexOption.IGNORE_CASE)
     val m3 = pat3.find(clean)
     if (m3 != null) {
         val agent = m3.groupValues[1].trim()
-        if (agent.length > 2) {
+        if (agent.length > 2 && !isOp(agent)) {
             return Pair(agent, agent)
         }
     }
-    
+
+    // Pattern 4: Generic phone and capitalized name extractor
+    val phoneRegex = """(\+?[0-9]{8,15})""".toRegex()
+    val phoneMatches = phoneRegex.findAll(clean.replace(" ", ""))
+    for (pm in phoneMatches) {
+        val phone = pm.value
+        if (phone.length >= 8 && !isOp(phone)) {
+            val phoneIndex = clean.indexOf(phone)
+            if (phoneIndex > 10) {
+                val preText = clean.substring(0, phoneIndex).trim()
+                val nameMatch = """(?:de|reçu de|recu de|expéditeur:?|expediteur:?|par)\s+([A-Z][A-Z\s.-]{2,30})""".toRegex(RegexOption.IGNORE_CASE).find(preText)
+                if (nameMatch != null) {
+                    val name = nameMatch.groupValues[1].trim()
+                    if (name.length > 2 && !isOp(name)) {
+                        return Pair(phone, name)
+                    }
+                }
+            }
+            return Pair(phone, phone)
+        }
+    }
+
     return null
 }
 
@@ -2701,23 +2742,27 @@ fun ClientsTabRedesigned(
             val match = extractDepositorFromSms(tx.originalMessage)
             if (match != null) {
                 val (phone, name) = match
-                val existing = depositorsMap[phone]
-                if (existing != null) {
-                    depositorsMap[phone] = Triple(
-                        if (name != phone) name else existing.first,
-                        existing.second + tx.amount,
-                        maxOf(existing.third, tx.date)
-                    )
-                } else {
-                    depositorsMap[phone] = Triple(name, tx.amount, tx.date)
-                }
-            } else {
-                val opName = tx.operator
-                val existing = depositorsMap[opName]
-                if (existing != null) {
-                    depositorsMap[opName] = Triple(opName, existing.second + tx.amount, maxOf(existing.third, tx.date))
-                } else {
-                    depositorsMap[opName] = Triple(opName, tx.amount, tx.date)
+                // Double check to ensure we never treat an operator itself as a client
+                val cleanPhone = phone.uppercase().trim().replace(" ", "").replace("_", "")
+                val cleanName = name.uppercase().trim().replace(" ", "").replace("_", "")
+                val isOp = cleanPhone.contains("ORANGE") || cleanPhone.contains("MTN") || cleanPhone.contains("MOMO") ||
+                           cleanPhone.contains("WAVE") || cleanPhone.contains("WAYE") || cleanPhone.contains("AIRTEL") ||
+                           cleanPhone.contains("FLOOZ") || cleanPhone.contains("MOOV") ||
+                           cleanName.contains("ORANGE") || cleanName.contains("MTN") || cleanName.contains("MOMO") ||
+                           cleanName.contains("WAVE") || cleanName.contains("WAYE") || cleanName.contains("AIRTEL") ||
+                           cleanName.contains("FLOOZ") || cleanName.contains("MOOV")
+
+                if (!isOp) {
+                    val existing = depositorsMap[phone]
+                    if (existing != null) {
+                        depositorsMap[phone] = Triple(
+                            if (name != phone) name else existing.first,
+                            existing.second + tx.amount,
+                            maxOf(existing.third, tx.date)
+                        )
+                    } else {
+                        depositorsMap[phone] = Triple(name, tx.amount, tx.date)
+                    }
                 }
             }
         }
@@ -2730,7 +2775,7 @@ fun ClientsTabRedesigned(
                 lastDepositDate = data.third,
                 transactionCount = transactions.count { 
                     val m = extractDepositorFromSms(it.originalMessage)
-                    (m != null && m.first == phone) || (m == null && it.operator == phone)
+                    m != null && m.first == phone
                 }
             )
         }.sortedByDescending { it.lastDepositDate }

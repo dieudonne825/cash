@@ -4,7 +4,7 @@ import android.Manifest
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -39,7 +39,7 @@ import com.pettycash.cashsms.ui.ConversationScreen
 import com.pettycash.cashsms.ui.HomeScreen
 import com.pettycash.cashsms.ui.theme.GoogleMessagesTheme
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
 
     private val requestPermissions = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -170,6 +170,54 @@ class MainActivity : ComponentActivity() {
             .takeIf { it.hasExtra("message_id") }
             ?.getLongExtra("message_id", 0L)
     }
+
+    fun triggerBiometricPrompt(
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit,
+        onNotAvailable: () -> Unit
+    ) {
+        val biometricManager = androidx.biometric.BiometricManager.from(this)
+        val canAuthenticate = biometricManager.canAuthenticate(
+            androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG or 
+            androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_WEAK
+        )
+
+        if (canAuthenticate == androidx.biometric.BiometricManager.BIOMETRIC_SUCCESS) {
+            val executor = androidx.core.content.ContextCompat.getMainExecutor(this)
+            val biometricPrompt = androidx.biometric.BiometricPrompt(this, executor,
+                object : androidx.biometric.BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                        super.onAuthenticationError(errorCode, errString)
+                        onError(errString.toString())
+                    }
+
+                    override fun onAuthenticationSucceeded(result: androidx.biometric.BiometricPrompt.AuthenticationResult) {
+                        super.onAuthenticationSucceeded(result)
+                        onSuccess()
+                    }
+
+                    override fun onAuthenticationFailed() {
+                        super.onAuthenticationFailed()
+                        onError("Authentification biométrique échouée")
+                    }
+                }
+            )
+
+            val promptInfo = androidx.biometric.BiometricPrompt.PromptInfo.Builder()
+                .setTitle("Authentification requise")
+                .setSubtitle("Déverrouillez Cash avec votre empreinte")
+                .setNegativeButtonText("Utiliser le code PIN")
+                .build()
+
+            try {
+                biometricPrompt.authenticate(promptInfo)
+            } catch (e: java.lang.Exception) {
+                onError(e.message ?: "Erreur d'authentification")
+            }
+        } else {
+            onNotAvailable()
+        }
+    }
 }
 
 @Composable
@@ -182,6 +230,32 @@ fun LockScreenOverlay(
     var enteredPin by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var showBiometricAuth by remember { mutableStateOf(securityType == "BIOMETRIC") }
+    var showSimulatedBiometric by remember { mutableStateOf(false) }
+
+    if (showBiometricAuth) {
+        val activity = context as? MainActivity
+        if (activity != null) {
+            LaunchedEffect(showBiometricAuth) {
+                activity.triggerBiometricPrompt(
+                    onSuccess = {
+                        showBiometricAuth = false
+                        onUnlockSuccess()
+                    },
+                    onError = { error ->
+                        errorMessage = error
+                        showBiometricAuth = false
+                    },
+                    onNotAvailable = {
+                        showSimulatedBiometric = true
+                        showBiometricAuth = false
+                    }
+                )
+            }
+        } else {
+            showSimulatedBiometric = true
+            showBiometricAuth = false
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -349,12 +423,20 @@ fun LockScreenOverlay(
                         }
                     }
                 }
+                
+                Text(
+                    text = "Code PIN par défaut : 0000",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
             }
         }
 
-        if (showBiometricAuth) {
+        if (showSimulatedBiometric) {
             AlertDialog(
-                onDismissRequest = { showBiometricAuth = false },
+                onDismissRequest = { showSimulatedBiometric = false },
                 icon = {
                     Icon(
                         Icons.Default.Fingerprint,
@@ -363,12 +445,12 @@ fun LockScreenOverlay(
                         tint = MaterialTheme.colorScheme.primary
                     )
                 },
-                title = { Text("Authentification par empreinte") },
-                text = { Text("Placez votre doigt sur le capteur d'empreinte digitale pour déverrouiller Cash.") },
+                title = { Text("Simulation Empreinte Digitale") },
+                text = { Text("Votre appareil ne dispose pas d'empreinte digitale configurée ou n'est pas compatible.\n\n[Simulation] Appuyez sur 'Déverrouiller' pour tester le déverrouillage.") },
                 confirmButton = {
                     TextButton(
                         onClick = {
-                            showBiometricAuth = false
+                            showSimulatedBiometric = false
                             onUnlockSuccess()
                         }
                     ) {
@@ -376,7 +458,7 @@ fun LockScreenOverlay(
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { showBiometricAuth = false }) {
+                    TextButton(onClick = { showSimulatedBiometric = false }) {
                         Text("Annuler")
                     }
                 }

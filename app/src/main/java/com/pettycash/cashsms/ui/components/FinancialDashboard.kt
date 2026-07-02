@@ -52,7 +52,7 @@ object FinancialTracker {
         date: Long,
         customRules: List<CustomFilterRule> = emptyList()
     ): FinancialTransaction? {
-        val cleanBody = body.replace("\n", " ").replace("\r", " ")
+        val cleanBody = body.replace("\n", " ").replace("\r", " ").replace("\\s+".toRegex(), " ")
         val normalizedBody = cleanBody.lowercase()
         val addrLower = address.lowercase()
 
@@ -94,82 +94,102 @@ object FinancialTracker {
         // Determine Operator
         val operator = when {
             addrLower.contains("orangemoney") || addrLower.contains("orange") || addrLower.contains("om") -> "Orange Money"
-            addrLower.contains("airtel") -> "Airtel Money"
+            addrLower.contains("airtel") -> "Airtel"
             addrLower.contains("wave") -> "Wave"
+            addrLower.contains("waye") -> "Waye"
             addrLower.contains("mtn") || addrLower.contains("momo") -> "MTN MoMo"
             addrLower.contains("petty") -> "Petty Cash"
-            normalizedBody.contains("orange money") -> "Orange Money"
-            normalizedBody.contains("airtel") -> "Airtel Money"
+            normalizedBody.contains("orange money") || normalizedBody.contains("om ") || normalizedBody.contains(" orange") -> "Orange Money"
+            normalizedBody.contains("airtel") -> "Airtel"
             normalizedBody.contains("wave") -> "Wave"
+            normalizedBody.contains("waye") -> "Waye"
             normalizedBody.contains("mtn") || normalizedBody.contains("momo") -> "MTN MoMo"
             normalizedBody.contains("petty cash") -> "Petty Cash"
             else -> "Autre"
         }
-        
-        // Inflow (Dépôts, Réceptions, Remboursements)
-        val inflowPatterns = listOf(
-            // "Depot de 50 000 FCFA", "Depot effectue de 30 000 FCFA"
-            """(?:depot\s+effectue\s+de|depot\s+de|depot|recu|remboursement|credit\s+de)\s+([0-9\s.,]+)\s*(?:fcfa|f\s*cfa|xof|xaf|f\b)""".toRegex(),
-            // "25 000 FCFA recu"
-            """([0-9\s.,]+)\s*(?:fcfa|f\s*cfa|xof|xaf|f\b)\s+(?:recu|rembourse)""".toRegex()
-        )
-        
-        // Outflow (Retraits, Transferts, Achats)
-        val outflowPatterns = listOf(
-            // "Vous avez envoye 15 000 FCFA", "Achat approuve de 12 500 FCFA"
-            """(?:envoye|retrait\s+de|retrait|paiement\s+de|paiement|achat\s+approuve\s+de|achat|debit\s+de|transfert\s+de|transfert|paye)\s+([0-9\s.,]+)\s*(?:fcfa|f\s*cfa|xof|xaf|f\b)""".toRegex(),
-            // "15 000 FCFA envoye"
-            """([0-9\s.,]+)\s*(?:fcfa|f\s*cfa|xof|xaf|f\b)\s+(?:envoye|retrait|paye|achat)""".toRegex()
+
+        // Determine direction (IN vs OUT) intelligently based on keywords
+        val isWithdrawal = normalizedBody.contains("retrait") || 
+                           normalizedBody.contains("retiré") || 
+                           normalizedBody.contains("retire") || 
+                           normalizedBody.contains("débité") || 
+                           normalizedBody.contains("debite") || 
+                           normalizedBody.contains("debit de") ||
+                           normalizedBody.contains("envoyé") || 
+                           normalizedBody.contains("envoye") || 
+                           normalizedBody.contains("paiement") || 
+                           normalizedBody.contains("payé") || 
+                           normalizedBody.contains("paye") || 
+                           normalizedBody.contains("achat") || 
+                           normalizedBody.contains("facture") || 
+                           normalizedBody.contains("transféré") || 
+                           normalizedBody.contains("transfere") || 
+                           normalizedBody.contains("frais de")
+
+        val isDeposit = normalizedBody.contains("dépôt") || 
+                        normalizedBody.contains("depot") || 
+                        normalizedBody.contains("reçu") || 
+                        normalizedBody.contains("recu") || 
+                        normalizedBody.contains("crédité") || 
+                        normalizedBody.contains("credite") || 
+                        normalizedBody.contains("credit de") ||
+                        normalizedBody.contains("versement") || 
+                        normalizedBody.contains("approvisionnement") || 
+                        normalizedBody.contains("réception") || 
+                        normalizedBody.contains("reception")
+
+        // Prioritize explicit direction determination
+        var foundType = when {
+            isWithdrawal && !isDeposit -> "OUT"
+            isDeposit && !isWithdrawal -> "IN"
+            isWithdrawal && isDeposit -> {
+                // Check which keyword comes first or is more prominent
+                val depositIdx = minOf(
+                    if (normalizedBody.contains("depot")) normalizedBody.indexOf("depot") else Int.MAX_VALUE,
+                    if (normalizedBody.contains("recu")) normalizedBody.indexOf("recu") else Int.MAX_VALUE
+                )
+                val withdrawalIdx = minOf(
+                    if (normalizedBody.contains("retrait")) normalizedBody.indexOf("retrait") else Int.MAX_VALUE,
+                    if (normalizedBody.contains("envoye")) normalizedBody.indexOf("envoye") else Int.MAX_VALUE
+                )
+                if (depositIdx < withdrawalIdx) "IN" else "OUT"
+            }
+            else -> null
+        }
+
+        // Patterns to match the main transaction amount
+        val transactionPatterns = listOf(
+            """(?:depot\s+effectue\s+de|depot\s+de|depot|recu|reçu|remboursement|credit\s+de|crédit\s+de|retrait\s+de|retrait|paiement\s+de|paiement|achat\s+approuve\s+de|achat|debit\s+de|débit\s+de|transfert\s+de|transfert|paye|payé)\s+([0-9\s.,]+)\s*(?:fcfa|f\s*cfa|xof|xaf|f\b)""".toRegex(),
+            """([0-9\s.,]+)\s*(?:fcfa|f\s*cfa|xof|xaf|f\b)\s+(?:recu|reçu|rembourse|envoye|envoyé|retrait|paye|payé|achat)""".toRegex(),
+            """([0-9\s.,]{2,12})\s*(?:fcfa|f\s*cfa|xof|xaf|f\b)""".toRegex()
         )
 
         var foundAmount: Double? = null
-        var foundType: String? = null
 
-        // 1. Try matching inflow
-        for (pattern in inflowPatterns) {
+        for (pattern in transactionPatterns) {
             val match = pattern.find(normalizedBody)
             if (match != null) {
                 val parsed = parseAmountString(match.groupValues[1])
                 if (parsed != null && parsed > 0) {
-                    foundAmount = parsed
-                    foundType = "IN"
-                    break
-                }
-            }
-        }
-
-        // 2. Try matching outflow
-        if (foundAmount == null) {
-            for (pattern in outflowPatterns) {
-                val match = pattern.find(normalizedBody)
-                if (match != null) {
-                    val parsed = parseAmountString(match.groupValues[1])
-                    if (parsed != null && parsed > 0) {
+                    val matchedText = match.value
+                    val isBalance = matchedText.contains("solde") || normalizedBody.substring(maxOf(0, normalizedBody.indexOf(matchedText) - 15), normalizedBody.indexOf(matchedText)).contains("solde")
+                    val isFee = matchedText.contains("frais") || normalizedBody.substring(maxOf(0, normalizedBody.indexOf(matchedText) - 15), normalizedBody.indexOf(matchedText)).contains("frais")
+                    if (!isBalance && !isFee) {
                         foundAmount = parsed
-                        foundType = "OUT"
                         break
                     }
                 }
             }
         }
 
-        // 3. Fallback to any number near "FCFA" or "F"
+        // Fallback to any number near "FCFA" or "F"
         if (foundAmount == null) {
             val fallbackRegex = """([0-9\s.,]{2,12})\s*(?:fcfa|f\s*cfa|xof|xaf|f\b)""".toRegex()
             val matches = fallbackRegex.findAll(normalizedBody)
             for (match in matches) {
                 val parsed = parseAmountString(match.groupValues[1])
-                if (parsed != null && parsed > 100) { // arbitrary lower limit to avoid matching minor things like fees
+                if (parsed != null && parsed > 50) {
                     foundAmount = parsed
-                    // Estimate direction based on keywords in body
-                    val isOut = normalizedBody.contains("envoye") || 
-                                normalizedBody.contains("retrait") || 
-                                normalizedBody.contains("paiement") || 
-                                normalizedBody.contains("achat") || 
-                                normalizedBody.contains("frais") ||
-                                normalizedBody.contains("debit") ||
-                                normalizedBody.contains("frais")
-                    foundType = if (isOut) "OUT" else "IN"
                     break
                 }
             }
@@ -177,21 +197,28 @@ object FinancialTracker {
 
         if (foundAmount == null) return null
 
+        if (foundType == null) {
+            foundType = if (isWithdrawal) "OUT" else "IN"
+        }
+
         // Categorize beautifully
         val category = when {
-            normalizedBody.contains("depot") -> "Dépôt"
+            normalizedBody.contains("depot") || normalizedBody.contains("dépôt") -> "Dépôt"
             normalizedBody.contains("retrait") -> "Retrait"
-            normalizedBody.contains("transfert") || normalizedBody.contains("envoye") -> "Transfert"
-            normalizedBody.contains("achat") || normalizedBody.contains("paiement") || normalizedBody.contains("paye") -> "Achat"
+            normalizedBody.contains("transfert") || normalizedBody.contains("envoye") || normalizedBody.contains("envoyé") -> "Transfert"
+            normalizedBody.contains("achat") || normalizedBody.contains("paiement") || normalizedBody.contains("paye") || normalizedBody.contains("payé") -> "Achat"
             normalizedBody.contains("remboursement") || normalizedBody.contains("rembourse") -> "Remboursement"
-            else -> "Autre"
+            else -> if (foundType == "IN") "Dépôt" else "Retrait"
         }
 
         // Parse balance
         var foundBalance: Double? = null
         val balancePatterns = listOf(
-            """(?:nouveau\s+solde(?:\s+\w+){0,3}[:\s]+|solde\s+(?:\w+\s+){0,2}est\s+de\s+|solde\s*:\s*)([0-9\s.,]+)\s*(?:fcfa|f\s*cfa|xof|xaf|f\b)""".toRegex()
+            """(?:nouveau\s+solde|solde\s+actuel|solde\s+de\s+clôture|solde\s+de\s+cloture|solde|votre\s+solde)(?:\s+de\s+clôture|\s+de\s+cloture|\s+actuel|\s+principal|\s+compte|\s+votre|\s+de|\s+votre\s+compte){0,3}\s*(?:est\s+de|est|:)?\s*([0-9\s.,]+)\s*(?:fcfa|f\s*cfa|xof|xaf|f\b)""".toRegex(),
+            """(?:solde|solde\s+de\s+votre\s+compte)(?:\s+est)?\s*[:\s-]\s*([0-9\s.,]+)\s*(?:fcfa|f\s*cfa|xof|xaf|f\b)""".toRegex(),
+            """(?:nouveau\s+solde|solde)(?:\s+\w+){1,4}\s+([0-9\s.,]+)\s*(?:fcfa|f\s*cfa|xof|xaf|f\b)""".toRegex()
         )
+
         for (pattern in balancePatterns) {
             val match = pattern.find(normalizedBody)
             if (match != null) {
@@ -205,7 +232,7 @@ object FinancialTracker {
 
         return FinancialTransaction(
             amount = foundAmount,
-            type = foundType ?: "IN",
+            type = foundType,
             category = category,
             operator = operator,
             originalMessage = body,
@@ -215,9 +242,14 @@ object FinancialTracker {
     }
 
     private fun parseAmountString(str: String): Double? {
-        val clean = str.replace(" ", "")
+        var s = str.trim()
+        if (s.endsWith(".") || s.endsWith(",")) {
+            s = s.dropLast(1).trim()
+        }
+        val clean = s.replace(" ", "")
             .replace(",", "")
             .replace(".", "")
+            .replace("\u00A0", "")
             .trim()
         return clean.toDoubleOrNull()
     }
@@ -466,7 +498,8 @@ fun FinancialDashboardCard(
                         "Orange Money" -> Color(0xFFFF6600)
                         "MTN MoMo" -> Color(0xFFFFCC00)
                         "Wave" -> Color(0xFF00A2E8)
-                        "Airtel Money" -> Color(0xFFE11A22)
+                        "Waye" -> Color(0xFF4A90E2)
+                        "Airtel" -> Color(0xFFE11A22)
                         "Petty Cash" -> MaterialTheme.colorScheme.primary
                         else -> MaterialTheme.colorScheme.secondary
                     }
